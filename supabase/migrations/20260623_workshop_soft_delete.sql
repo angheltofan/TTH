@@ -61,7 +61,7 @@ create index if not exists ix_wseries_active
 
 do $$
 declare
-  cur_action char;
+  cur_action text;
   fk_name    text;
 begin
   select rc.delete_rule, tc.constraint_name
@@ -95,7 +95,7 @@ end$$;
 
 do $$
 declare
-  cur_action char;
+  cur_action text;
   fk_name    text;
 begin
   select rc.delete_rule, tc.constraint_name
