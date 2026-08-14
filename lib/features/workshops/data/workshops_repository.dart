@@ -5,60 +5,58 @@ import '../../dashboard/domain/dashboard_workshop.dart';
 import '../domain/scheduled_workshop.dart';
 import '../domain/workshop_detail_row.dart';
 
-/// Reason a [WorkshopsRepository.deleteWorkshopHard] call refused. Lets
-/// the UI render a friendly message without string-matching exceptions.
+/// Reason a cancel call refused. Lets the UI render a friendly message
+/// without string-matching exceptions.
 ///
-///   • [hasAttendance] — the safety gate found attendance rows
-///     referencing this scheduled workshop (one-off delete only). The
-///     UI may re-call with `includeAttendance: true` after the admin
-///     explicitly confirms historical-data loss.
-///   • [recurringSeries] — `deleteWorkshopOneOff` was called for a
-///     scheduled workshop that belongs to a recurring series. The
-///     caller must use `deleteWorkshopSeries` instead.
-///   • [refusedByServer] — the DELETE statement reached the server but
-///     no row was actually removed. Typical causes: an RLS policy
-///     denies DELETE for this caller (the request still returns 2xx
+///   • [refusedByServer] — the UPDATE statement reached the server but
+///     no row was actually modified. Typical causes: an RLS policy
+///     denies UPDATE for this caller (the request still returns 2xx
 ///     but matches zero rows).
-enum WorkshopDeleteBlockedReason {
-  hasAttendance,
-  recurringSeries,
+enum WorkshopCancelBlockedReason {
   refusedByServer,
 }
 
-/// Thrown by `deleteWorkshopOneOff` / `deleteWorkshopSeries` when the
-/// safety gate refuses the delete OR when the DELETE statement returned
-/// successfully but did not remove the targeted row. Never thrown for
+/// Thrown by `archiveWorkshopOneOff` / `cancelWorkshopSeries` when the
+/// safety gate refuses the archive OR when the UPDATE statement returned
+/// successfully but did not modify the targeted row. Never thrown for
 /// infrastructure errors (those propagate as `PostgrestException` /
 /// generic errors).
-class WorkshopDeleteBlockedException implements Exception {
-  const WorkshopDeleteBlockedException(this.reason);
-  final WorkshopDeleteBlockedReason reason;
+class WorkshopCancelBlockedException implements Exception {
+  const WorkshopCancelBlockedException(this.reason);
+  final WorkshopCancelBlockedReason reason;
 
   @override
   String toString() =>
-      'WorkshopDeleteBlockedException(reason: ${reason.name})';
+      'WorkshopCancelBlockedException(reason: ${reason.name})';
 }
 
-/// Pre-flight counts for a `deleteWorkshopSeries` call. The UI uses
-/// these to choose the right confirmation dialog and to phrase the
-/// strong "history will be lost" warning when [attendanceCount] > 0.
-class SeriesDeletionImpact {
-  const SeriesDeletionImpact({
+/// Pre-flight counts for an `cancelWorkshopSeries` call. The UI uses
+/// these to phrase the confirmation dialog with concrete numbers of
+/// sessions / attendance rows / enrolled children that will be
+/// preserved as history.
+///
+/// After the archive-only refactor (2026-06-23), these numbers are no
+/// longer "will be lost" — they are "will be preserved". The UI copy
+/// was updated accordingly.
+class SeriesCancellationImpact {
+  const SeriesCancellationImpact({
     required this.scheduledCount,
     required this.attendanceCount,
     required this.enrollmentCount,
   });
 
-  /// Number of `scheduled_workshops` rows that would be deleted.
+  /// Number of `scheduled_workshops` rows that will be archived
+  /// (marked `archived_at = now()`, hidden from active lists, retained
+  /// for history).
   final int scheduledCount;
 
-  /// Number of `attendance` rows that reference those scheduled
-  /// workshops. When non-zero the UI must surface the second warning
-  /// before calling `deleteWorkshopSeries(includeAttendance: true)`.
+  /// Number of `attendance` rows referencing those scheduled workshops.
+  /// These are **preserved** — the UI shows the number so operators know
+  /// how much history is being retained.
   final int attendanceCount;
 
-  /// Number of `workshop_enrollments` rows for the series that would
-  /// be removed.
+  /// Number of `workshop_enrollments` rows that will be flipped to
+  /// `is_active = false` (kept as historical association records).
   final int enrollmentCount;
 }
 
@@ -315,6 +313,12 @@ class WorkshopsRepository {
     return copy;
   }
 
+  /// Retained for callers that only want to remove a **draft** workshop
+  /// row (never marked, never enrolled). The database FK from
+  /// `attendance.scheduled_workshop_id` is RESTRICT / NO ACTION, so
+  /// this call fails at the server if the row carries any history —
+  /// which is exactly the guarantee we want. History-bearing workshops
+  /// must go through [archiveWorkshopOneOff] instead.
   Future<void> delete(String id) async {
     await _client.from('scheduled_workshops').delete().eq('id', id);
   }
@@ -360,108 +364,67 @@ class WorkshopsRepository {
         .gte('workshop_date', fromDate.toIso8601String().split('T').first);
   }
 
-  /// Soft-cancels a single workshop session by setting [is_active] = false.
-  /// Does not delete attendance or enrollment data.
-  Future<void> cancelSession(String workshopId) async {
-    if (kDebugMode) debugPrint('[Workshops] cancelSession id=$workshopId');
-    await _client
-        .from('scheduled_workshops')
-        .update({'is_active': false})
-        .eq('id', workshopId);
-  }
-
-  /// Permanently deletes a **one-off** scheduled workshop row. Admin-only.
+  /// Cancels a **single** scheduled workshop row. Admin-only.
   ///
-  /// Refuses (with [WorkshopDeleteBlockedException]) when:
-  ///   • the row belongs to a recurring series (`series_id` /
-  ///     `recurring_series_id` set) → caller must use
-  ///     [deleteWorkshopSeries] instead;
-  ///   • attendance rows reference it and the caller did NOT pass
-  ///     `includeAttendance: true` (the UI must obtain explicit admin
-  ///     confirmation before passing that flag);
-  ///   • the DELETE matches zero rows but the row is still present
-  ///     server-side (e.g. RLS denial).
+  /// The row is marked as archived — `archived_at = now()`,
+  /// `archived_by = adminId`, `is_active = false`, plus an optional
+  /// `archived_reason` free-text field. Attendance and enrollment rows
+  /// remain untouched so child reports and history keep working.
   ///
-  /// Uses `delete().select('id')` to learn whether the DELETE actually
-  /// affected a row, then re-`SELECT`s on empty to distinguish "already
-  /// gone" from "server refused".
-  Future<void> deleteWorkshopOneOff({
+  /// Works for both one-off workshops AND a single occurrence of a
+  /// recurring series (rule 8: cancelling a single occurrence archives
+  /// only that session, not the whole series). To archive the whole
+  /// series, callers use [cancelWorkshopSeries] instead — that entry
+  /// point is reachable from the edit page's "Cancel entire series"
+  /// action, per the same rule.
+  ///
+  /// Refuses (with [WorkshopCancelBlockedException]) when the UPDATE
+  /// matches zero rows but the row is still present server-side (e.g.
+  /// RLS denial).
+  Future<void> cancelWorkshopOneOff({
     required bool isAdmin,
+    required String adminId,
     required String workshopId,
-    bool includeAttendance = false,
+    String? reason,
   }) async {
     if (!isAdmin) throw StateError('Unauthorized role');
     if (kDebugMode) {
-      debugPrint(
-          '[Workshops] deleteWorkshopOneOff id=$workshopId attn=$includeAttendance');
+      debugPrint('[Workshops] cancelWorkshopOneOff id=$workshopId');
     }
 
-    // 1. Refuse if this row belongs to a recurring series. The UI now
-    //    routes recurring instances to deleteWorkshopSeries; this check
-    //    is defence in depth.
-    final meta = await _client
+    // Verified soft-archive.
+    final updated = await _client
         .from('scheduled_workshops')
-        .select('series_id, recurring_series_id')
-        .eq('id', workshopId)
-        .maybeSingle();
-    if (meta != null) {
-      final sid = meta['series_id'] as String?;
-      final rsid = meta['recurring_series_id'] as String?;
-      final belongsToSeries =
-          (sid != null && sid.isNotEmpty) || (rsid != null && rsid.isNotEmpty);
-      if (belongsToSeries) {
-        throw const WorkshopDeleteBlockedException(
-          WorkshopDeleteBlockedReason.recurringSeries,
-        );
-      }
-    }
-
-    // 2. Attendance gate. When `includeAttendance` is false, refuse
-    //    on any attendance row. When true, delete attendance first so
-    //    the scheduled_workshops DELETE has no FK referrers left.
-    if (!includeAttendance) {
-      final att = await _client
-          .from('attendance')
-          .select('id')
-          .eq('scheduled_workshop_id', workshopId)
-          .limit(1);
-      if ((att as List).isNotEmpty) {
-        throw const WorkshopDeleteBlockedException(
-          WorkshopDeleteBlockedReason.hasAttendance,
-        );
-      }
-    } else {
-      await _client
-          .from('attendance')
-          .delete()
-          .eq('scheduled_workshop_id', workshopId);
-    }
-
-    // 3. Verified hard-delete.
-    final deleted = await _client
-        .from('scheduled_workshops')
-        .delete()
+        .update({
+          'archived_at': DateTime.now().toUtc().toIso8601String(),
+          'archived_by': adminId,
+          if (reason != null && reason.trim().isNotEmpty)
+            'archived_reason': reason.trim(),
+          'is_active': false,
+        })
         .eq('id', workshopId)
         .select('id');
-    if ((deleted as List).isNotEmpty) return;
+    if ((updated as List).isNotEmpty) return;
 
+    // UPDATE affected zero rows — determine whether the row exists at
+    // all (already gone → success from the UI's perspective) or the
+    // server refused (RLS).
     final stillThere = await _client
         .from('scheduled_workshops')
         .select('id')
         .eq('id', workshopId)
         .limit(1);
     if ((stillThere as List).isNotEmpty) {
-      throw const WorkshopDeleteBlockedException(
-        WorkshopDeleteBlockedReason.refusedByServer,
+      throw const WorkshopCancelBlockedException(
+        WorkshopCancelBlockedReason.refusedByServer,
       );
     }
   }
 
-  /// Measures what a `deleteWorkshopSeries` call would touch, so the UI
-  /// can render an accurate confirmation dialog (number of sessions
-  /// affected, attendance rows that would be lost, enrolled-children
-  /// links that would be removed).
-  Future<SeriesDeletionImpact> measureSeriesDeletionImpact({
+  /// Measures what an `cancelWorkshopSeries` call will touch. The UI
+  /// uses these counts to phrase the confirmation dialog with concrete
+  /// numbers of the history that will be **preserved**.
+  Future<SeriesCancellationImpact> measureSeriesCancellationImpact({
     required String seriesId,
   }) async {
     // 1. All scheduled_workshops belonging to the series. Match both
@@ -495,122 +458,101 @@ class WorkshopsRepository {
       attendanceCount = (att as List).length;
     }
 
-    return SeriesDeletionImpact(
+    return SeriesCancellationImpact(
       scheduledCount: scheduledIds.length,
       attendanceCount: attendanceCount,
       enrollmentCount: enrollmentCount,
     );
   }
 
-  /// Permanently deletes an entire recurring workshop series. Admin-only.
+  /// Archives an entire recurring workshop series. Admin-only.
   ///
-  /// Order (each step awaited and verified):
-  ///   1. Resolve all `scheduled_workshops.id`s for the series (matches
-  ///      `series_id` OR legacy `recurring_series_id`).
-  ///   2. If [includeAttendance] is false AND any attendance row
-  ///      references those scheduled workshops → refuse with
-  ///      [WorkshopDeleteBlockedException.hasAttendance]. The UI must
-  ///      surface a second warning and re-call with
-  ///      `includeAttendance: true` for the admin to proceed.
-  ///   3. Delete `attendance` rows for those scheduled workshops (only
-  ///      when `includeAttendance` is true).
-  ///   4. Delete `workshop_enrollments` rows for the series.
-  ///   5. Delete the `scheduled_workshops` rows themselves.
-  ///   6. Delete the `workshop_series` row.
-  ///   7. Verify nothing remains (defence in depth — surfaces silent
-  ///      RLS denials as [WorkshopDeleteBlockedReason.refusedByServer]).
+  /// Sets `archived_at = now()` + `is_active = false` on:
+  ///   1. The `workshop_series` row itself (stops the generator from
+  ///      creating future sessions — the generator iterates
+  ///      `workshop_series where archived_at is null`).
+  ///   2. All `scheduled_workshops` rows belonging to the series
+  ///      (`series_id` OR legacy `recurring_series_id`).
   ///
-  /// Once step 6 succeeds, the generator cannot recreate the series
-  /// because it iterates `workshop_series` directly — and there is no
-  /// row left to iterate.
-  Future<void> deleteWorkshopSeries({
+  /// Also flips `workshop_enrollments.is_active = false` for every
+  /// child enrolled in the series so lists of "active workshops for
+  /// this child" stop showing the archived series. **Enrollment rows
+  /// are not deleted** — they remain as historical association records.
+  ///
+  /// Attendance rows are **never** touched.
+  ///
+  /// Verifies the archive after each step so an RLS denial surfaces as
+  /// [WorkshopCancelBlockedException.refusedByServer] rather than a
+  /// silent no-op.
+  Future<void> cancelWorkshopSeries({
     required bool isAdmin,
+    required String adminId,
     required String seriesId,
-    bool includeAttendance = false,
+    String? reason,
   }) async {
     if (!isAdmin) throw StateError('Unauthorized role');
     if (kDebugMode) {
-      debugPrint(
-          '[Workshops] deleteWorkshopSeries seriesId=$seriesId attn=$includeAttendance');
+      debugPrint('[Workshops] cancelWorkshopSeries seriesId=$seriesId');
     }
 
-    // 1. Resolve scheduled-workshop ids.
-    final scheduled = await _client
-        .from('scheduled_workshops')
-        .select('id')
-        .or('series_id.eq.$seriesId,recurring_series_id.eq.$seriesId');
-    final scheduledIds = (scheduled as List)
-        .map((e) => (e as Map<String, dynamic>)['id'] as String)
-        .toList(growable: false);
+    final archivedAt = DateTime.now().toUtc().toIso8601String();
+    final trimmedReason =
+        (reason != null && reason.trim().isNotEmpty) ? reason.trim() : null;
 
-    // 2. Attendance gate.
-    if (scheduledIds.isNotEmpty && !includeAttendance) {
-      final att = await _client
-          .from('attendance')
-          .select('id')
-          .inFilter('scheduled_workshop_id', scheduledIds)
-          .limit(1);
-      if ((att as List).isNotEmpty) {
-        throw const WorkshopDeleteBlockedException(
-          WorkshopDeleteBlockedReason.hasAttendance,
-        );
-      }
-    }
-
-    // 3. Delete attendance (when allowed).
-    if (scheduledIds.isNotEmpty && includeAttendance) {
-      await _client
-          .from('attendance')
-          .delete()
-          .inFilter('scheduled_workshop_id', scheduledIds);
-    }
-
-    // 4. Delete enrollments for the series.
-    await _client
-        .from('workshop_enrollments')
-        .delete()
-        .eq('series_id', seriesId);
-
-    // 5. Delete scheduled_workshops belonging to the series.
-    if (scheduledIds.isNotEmpty) {
-      final deletedScheduled = await _client
-          .from('scheduled_workshops')
-          .delete()
-          .or('series_id.eq.$seriesId,recurring_series_id.eq.$seriesId')
-          .select('id');
-      if (kDebugMode) {
-        debugPrint(
-            '[Workshops] series delete: scheduled rows removed=${(deletedScheduled as List).length}');
-      }
-    }
-
-    // 6. Delete the workshop_series row itself.
-    final deletedSeries = await _client
+    // 1. Archive the workshop_series row itself.
+    final seriesUpdate = <String, dynamic>{
+      'archived_at': archivedAt,
+      'archived_by': adminId,
+      'archived_reason': ?trimmedReason,
+      'is_active': false,
+    };
+    final updatedSeries = await _client
         .from('workshop_series')
-        .delete()
+        .update(seriesUpdate)
         .eq('id', seriesId)
         .select('id');
     if (kDebugMode) {
       debugPrint(
-          '[Workshops] series delete: series rows removed=${(deletedSeries as List).length}');
+          '[Workshops] series cancel: workshop_series rows updated=${(updatedSeries as List).length}');
     }
 
-    // 7. Verify everything is gone. If anything remains, surface a
-    //    refused-by-server error so the UI doesn't lie.
-    final remainingScheduled = await _client
+    // 2. Archive every scheduled_workshops row belonging to the series.
+    final scheduledUpdate = <String, dynamic>{
+      'archived_at': archivedAt,
+      'archived_by': adminId,
+      'archived_reason': ?trimmedReason,
+      'is_active': false,
+    };
+    final updatedScheduled = await _client
         .from('scheduled_workshops')
-        .select('id')
+        .update(scheduledUpdate)
         .or('series_id.eq.$seriesId,recurring_series_id.eq.$seriesId')
-        .limit(1);
-    final remainingSeries = await _client
+        .select('id');
+    if (kDebugMode) {
+      debugPrint(
+          '[Workshops] series cancel: scheduled_workshops rows updated=${(updatedScheduled as List).length}');
+    }
+
+    // 3. Flip enrollment.is_active = false so the archived series stops
+    //    appearing in "active workshops for this child" lists. Rows are
+    //    preserved so history / analytics still know each child was
+    //    enrolled at some point.
+    await _client
+        .from('workshop_enrollments')
+        .update({'is_active': false})
+        .eq('series_id', seriesId);
+
+    // 4. Verify at least the series row itself was archived. If the
+    //    UPDATE affected 0 rows and the series row still has archived_at
+    //    IS NULL, the server refused the write (RLS).
+    final verify = await _client
         .from('workshop_series')
-        .select('id')
+        .select('id, archived_at')
         .eq('id', seriesId)
-        .limit(1);
-    if ((remainingScheduled as List).isNotEmpty ||
-        (remainingSeries as List).isNotEmpty) {
-      throw const WorkshopDeleteBlockedException(
-        WorkshopDeleteBlockedReason.refusedByServer,
+        .maybeSingle();
+    if (verify != null && verify['archived_at'] == null) {
+      throw const WorkshopCancelBlockedException(
+        WorkshopCancelBlockedReason.refusedByServer,
       );
     }
   }
