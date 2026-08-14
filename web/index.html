@@ -21,9 +21,16 @@
   <meta name="description" content="TTH Manager — Tales & Tech HUB management app.">
   <meta name="theme-color" content="#028FE3">
 
-  <!-- iOS meta tags & icons -->
+  <!-- iOS meta tags & icons.
+       Note: `apple-mobile-web-app-capable=yes` puts the page in
+       standalone/PWA mode when opened from the Home Screen. Some iOS
+       versions run those standalone launches inside a stricter fetch
+       sandbox where third-party requests (like Supabase auth) can fail
+       with `Load failed` (statusCode null). We ONLY enable the PWA
+       mode after auth so the login flow always runs in regular Safari
+       context. `mobile-web-app-capable` (the standard) stays on so
+       Android + Chrome PWA users keep the native-app-like experience. -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="TTH Manager">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">

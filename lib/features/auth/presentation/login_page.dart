@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../providers/auth_providers.dart';
 
@@ -41,14 +43,67 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       //
       // We keep `_loading = true` on success so the spinner stays
       // visible until the redirect swaps this page off-screen.
-    } catch (e) {
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[Auth] signIn failed: $e\n$stack');
       if (mounted) {
         setState(() => _loading = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Autentificare eșuată: $e')),
+          SnackBar(
+            content: Text(_friendlyAuthError(e)),
+            duration: const Duration(seconds: 5),
+          ),
         );
       }
     }
+  }
+
+  /// Maps low-level auth / transport exceptions to short Romanian
+  /// messages the user can act on. The raw exception is still logged
+  /// to the debug console for developer inspection but is never shown.
+  ///
+  /// Discrimination rules:
+  ///   • `AuthRetryableFetchException` — transport-level failure (no
+  ///     HTTP response). Typical on iOS Safari behind a content
+  ///     blocker, on a captive-portal Wi-Fi, or when the device has no
+  ///     working DNS. `statusCode` is null. Message: friendly
+  ///     "verifică conexiunea".
+  ///   • `AuthException` (`invalid_credentials`, `email_not_confirmed`)
+  ///     — server returned an actual error. Distinct message.
+  ///   • Any other `AuthException` — generic auth-server message.
+  ///   • Anything else (unlikely) — generic fallback that never shows
+  ///     the raw exception string.
+  String _friendlyAuthError(Object e) {
+    if (e is AuthRetryableFetchException) {
+      return 'Nu s-a putut realiza conexiunea cu serverul. '
+          'Verifică conexiunea la internet și încearcă din nou.';
+    }
+    if (e is AuthApiException) {
+      final code = e.code ?? '';
+      final message = e.message.toLowerCase();
+      if (code == 'invalid_credentials' ||
+          message.contains('invalid login credentials') ||
+          message.contains('invalid credentials')) {
+        return 'Email sau parolă incorectă.';
+      }
+      if (code == 'email_not_confirmed' ||
+          message.contains('email not confirmed')) {
+        return 'Contul nu este confirmat. Verifică email-ul primit la înregistrare.';
+      }
+      if (code == 'user_not_found' ||
+          message.contains('user not found')) {
+        return 'Nu există un cont cu acest email.';
+      }
+      if (e.statusCode == '429' || message.contains('rate limit')) {
+        return 'Prea multe încercări. Așteaptă un minut și reîncearcă.';
+      }
+      // Generic Supabase auth error — keep it short + non-technical.
+      return 'Autentificare eșuată. Verifică datele și încearcă din nou.';
+    }
+    if (e is AuthException) {
+      return 'Autentificare eșuată. Verifică datele și încearcă din nou.';
+    }
+    // Any other error type — never leak the raw exception string.
+    return 'A apărut o eroare neașteptată. Te rugăm să încerci din nou.';
   }
 
   @override
