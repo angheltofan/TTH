@@ -100,6 +100,54 @@ Catalog de domenii acoperite de tool-uri:
 - Notificări: get_notifications_summary, get_recent_notifications
 - Risc & analiză: get_risk_children, get_admin_priority_list, get_weekly_action_plan, get_growth_opportunities
 - Centru: get_center_info
+- Interogare SQL ad-hoc (rezervă): run_read_query
+
+Escape-hatch pentru întrebări care NU au un tool dedicat:
+
+Ai la dispoziție **run_read_query(sql, description)** — poți rula orice SELECT arbitrar pe schema public. Folosește-l când:
+  • Utilizatorul cere ceva foarte specific care nu se mapează pe niciun tool existent (ex: "câți copii sunt înscriși la Robotică ȘI Programare simultan?", "care traineri au primit cei mai mulți copii noi luna trecută?", "câte notificări de tip 'payment_due' au fost trimise săptămâna trecută?")
+  • Ai nevoie de un join / agregat cross-domeniu pe care tool-urile țintite nu-l fac
+  • Utilizatorul întreabă despre o coloană specifică sau o combinație de câmpuri neacoperită
+
+Reguli STRICTE pentru run_read_query:
+  1. Preferă mereu un tool dedicat când există. Ex: pentru „cine a plătit cu POS" folosești get_payments_by_method, NU run_read_query. Tool-urile țintite sunt mai rapide + mai fiabile.
+  2. NU folosi run_read_query pentru întrebări comune (copii activi, ateliere azi, plăți restante, etc.) — sunt tool-uri specifice.
+  3. Query-ul TREBUIE să înceapă cu SELECT sau WITH. INSERT/UPDATE/DELETE/DDL sunt refuzate.
+  4. Doar schema public — nu poți referi auth.*, storage.*, realtime.*, pg_*, information_schema.*
+  5. Coloane sensibile (parole, tokenuri, secrete) sunt filtrate automat — nu le include tu în SELECT.
+  6. Include mereu un LIMIT explicit dacă știi câte rezultate vrei. Altfel se aplică LIMIT 200 automat.
+  7. Pentru fiecare apel, trimite un \`description\` scurt (o propoziție) care explică ce încerci să afli.
+  8. Dacă query-ul returnează eroare, citește-o și corectează sintaxa. NU inventa rezultate.
+
+Overview schemă public (folosește când construiești query-uri):
+  • **children**: id, first_name, last_name, birth_date, age, parent_name, parent_phone, is_active, payment_type ('paid' | 'free'), notes, created_at
+  • **profiles**: id, first_name, last_name, role ('admin' | 'trainer' | 'parent'), created_at
+  • **child_parents**: id, child_id, parent_id (link N:M copii↔părinți)
+  • **workshop_series**: id, title, workshop_type, day_of_week, start_time, end_time, trainer_id, notes, is_active, archived_at, archived_by, archived_reason, created_at
+  • **scheduled_workshops**: id, series_id, recurring_series_id (legacy), title, workshop_type, day_of_week, workshop_date, start_time, end_time, trainer_id, notes, is_active, is_recurring, archived_at, archived_by, archived_reason, created_at
+  • **workshop_enrollments**: id, child_id, series_id, is_active, created_at
+  • **attendance**: id, scheduled_workshop_id, child_id, status ('present' | 'absent' | 'motivated'), observation, marked_at, marked_by, payment_cycle_id, is_archived
+  • **payment_cycles**: id, child_id, period_start, period_end, sessions_count, status ('due' | 'overdue' | 'paid' | 'paid_advance' | 'cancelled'), payment_method ('pos' | 'op' | null), amount, currency, paid_at, confirmed_by, notes, created_at
+  • **notifications**: id, recipient_id, type, title, body, is_read, priority, related_child_id, related_workshop_id, action_url, created_at
+  • **demo_workshops**: id, child_first_name, child_last_name, parent_name, parent_phone, parent_email, workshop_type, workshop_title, demo_date, start_time, end_time, trainer_id, status, notes, created_by, created_at
+  • **team_chat_messages**: id, sender_id, body, is_deleted, attachment_url, attachment_name, attachment_size, attachment_kind ('image' | 'file'), created_at
+  • **child_progress**: id, child_id, trainer_id, workshop_series_id, observation, status ('completed' | 'in_progress' | 'needs_review'), created_at
+  • **lesson_materials**: id, workshop_type, title, url, uploaded_by, is_active, created_at
+  • **parent_setup_tokens**: id, parent_id, expires_at, consumed_at (⚠️ conține token_hash care e filtrat automat — folosește doar pentru status de invitație)
+
+Exemple concrete de query-uri utile:
+  • „Câți copii sunt la Robotică ȘI la Programare simultan?":
+    SELECT COUNT(DISTINCT we1.child_id) FROM workshop_enrollments we1 JOIN workshop_series ws1 ON we1.series_id=ws1.id JOIN workshop_enrollments we2 ON we2.child_id=we1.child_id JOIN workshop_series ws2 ON we2.series_id=ws2.id WHERE we1.is_active AND we2.is_active AND ws1.workshop_type ILIKE '%robotic%' AND ws2.workshop_type ILIKE '%program%'
+  • „Ce trainer a primit cei mai mulți copii noi luna trecută?":
+    SELECT p.first_name || ' ' || p.last_name AS trainer, COUNT(DISTINCT we.child_id) AS copii_noi FROM workshop_enrollments we JOIN workshop_series ws ON we.series_id=ws.id JOIN profiles p ON ws.trainer_id=p.id JOIN children c ON we.child_id=c.id WHERE c.created_at >= date_trunc('month', now()) - interval '1 month' AND c.created_at < date_trunc('month', now()) AND we.is_active GROUP BY p.id, p.first_name, p.last_name ORDER BY copii_noi DESC LIMIT 5
+  • „Câte notificări de plată neconfirmată au fost trimise săptămâna trecută?":
+    SELECT COUNT(*) FROM notifications WHERE type = 'payment_due' AND created_at >= date_trunc('week', now()) - interval '1 week' AND created_at < date_trunc('week', now())
+
+Cum raportezi rezultatele din run_read_query:
+  • Extrage numere/nume din \`rows\` și transformă-le în răspuns natural românesc.
+  • Menționează contextul (perioada, filtrul) dacă e relevant.
+  • Dacă răspunsul are câmpul \`nota\` cu „Rezultatul a fost tăiat la 200 rânduri", spune-i utilizatorului că sunt cel puțin 200 rezultate și că trebuie să rafineze întrebarea pentru un subset specific.
+  • Dacă răspunsul are \`eroare\`, spune utilizatorului că interogarea a eșuat, transcrie mesajul de eroare pe scurt și propune reformulare.
 
 Rolul tău: nu doar să returnezi cifre brute, ci să acționezi ca analist. Când o întrebare permite o privire de ansamblu, sintetizează datele în concluzii practice.
 
@@ -164,7 +212,7 @@ Exemple de mapare promptă → tool:
 - "Plăți confirmate în ultimele 30 de zile" → get_recent_confirmed_payments
 - "Cine e aproape de următorul ciclu de plată" → get_children_near_payment_cycle
 
-Plăți pe METODĂ — SINGURUL tool disponibil: `get_payments_by_method`. Îl folosești pentru ORICE întrebare despre plăți per metodă, indiferent de formulare (nume, agregat, distribuție, count). Nu există alt tool concurent. Câmpurile din răspunsul lui acoperă atât detalii individuale (pe_metoda.<METODĂ>.plati[] cu nume + sume + confirmatori) cât și agregate (pe_metoda.<METODĂ>.total, total_plati, total_suma). Pentru „distribuția pe metode luna aceasta" apelezi tot `get_payments_by_method` cu `methods=["pos","op","unknown"]` + fereastra dorită, apoi citești numerele din `pe_metoda.*.total`.
+Plăți pe METODĂ — SINGURUL tool disponibil: \`get_payments_by_method\`. Îl folosești pentru ORICE întrebare despre plăți per metodă, indiferent de formulare (nume, agregat, distribuție, count). Nu există alt tool concurent. Câmpurile din răspunsul lui acoperă atât detalii individuale (pe_metoda.<METODĂ>.plati[] cu nume + sume + confirmatori) cât și agregate (pe_metoda.<METODĂ>.total, total_plati, total_suma). Pentru „distribuția pe metode luna aceasta" apelezi tot \`get_payments_by_method\` cu \`methods=["pos","op","unknown"]\` + fereastra dorită, apoi citești numerele din \`pe_metoda.*.total\`.
 
 DEZAMBIGUARE lună calendaristică (rezolvă „luna X" ÎNAINTE să chemi tool-ul):
 - „luna ianuarie" / „ianuarie" → month=1
@@ -1351,6 +1399,50 @@ const TOOLS: ToolDef[] = [
       "duplicate care diferă doar prin case, ateliere active fără copii, " +
       "ateliere inactive care încă apar în analize.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+
+  // ── Escape hatch: arbitrary SELECT (SQL-writing model, use with care)
+  {
+    name: "run_read_query",
+    description:
+      "Rulează o interogare SQL SELECT arbitrară pe schema public. " +
+      "Folosește DOAR când nicio altă unealtă nu răspunde întrebării — " +
+      "interogări ad-hoc, cross-joins, agregate nespecifice. Uneltele " +
+      "dedicate (get_children_summary, get_payments_by_method, etc.) sunt " +
+      "MULT MAI RAPIDE și mai fiabile — preferă-le mereu când există. " +
+      "\n\nCe poți face:" +
+      "\n  • SELECT / WITH ... SELECT pe orice tabelă din schema public " +
+      "  (children, workshop_series, scheduled_workshops, workshop_enrollments, " +
+      "  attendance, payment_cycles, profiles, notifications, demo_workshops, " +
+      "  team_chat_messages, child_progress, lesson_materials, etc.)" +
+      "\n  • JOIN-uri, agregate, CTE-uri, funcții de fereastră" +
+      "\n\nCe NU poți face (blocat structural):" +
+      "\n  • INSERT / UPDATE / DELETE / DROP / ALTER / CREATE — orice DML/DDL" +
+      "\n  • Nu poți referi schemele auth, storage, realtime, cron, pg_*, " +
+      "  vault, information_schema" +
+      "\n  • Coloanele cu parole și tokenuri (encrypted_password, token_hash, " +
+      "  refresh_token, secret_key etc.) sunt filtrate automat din răspuns" +
+      "\n\nLimite: maxim 200 rânduri returnate (dacă query-ul nu are propriu " +
+      "LIMIT); timeout 10 secunde per interogare.",
+    parameters: {
+      type: "object",
+      properties: {
+        sql: {
+          type: "string",
+          description:
+            "Interogarea SQL. Trebuie să înceapă cu SELECT sau WITH. " +
+            "Fără ; final. Adaugă LIMIT propriu dacă vrei mai puține rezultate.",
+        },
+        description: {
+          type: "string",
+          description:
+            "O propoziție scurtă care descrie ce încerci să afli. Ex: " +
+            "'Numărul copiilor înscriși luna trecută pe tip de atelier.'",
+        },
+      },
+      required: ["sql", "description"],
+      additionalProperties: false,
+    },
   },
 ];
 
@@ -6437,6 +6529,7 @@ function sourcesFor(toolName: string): string[] {
     // Calitate ateliere
     "get_attendance_by_workshop_rankings": ["Prezențe", "Ateliere"],
     "get_workshop_name_quality_issues": ["Ateliere", "Calitatea datelor"],
+    "run_read_query": ["Interogare SQL ad-hoc"],
   };
   return MAP[toolName] ?? [];
 }
@@ -6453,6 +6546,148 @@ function approxRowCount(result: unknown): number {
     return total;
   }
   return 0;
+}
+
+// ── Escape-hatch: run_read_query ────────────────────────────────────────────
+
+/// Column names (or fragments) that must NEVER leave the edge function.
+/// Matched case-insensitively against every returned column key. Any row
+/// key whose lowercase form contains one of these substrings is stripped
+/// before the model sees the response. Only true secrets belong here —
+/// we deliberately do NOT block emails, phones, or amounts (the operator
+/// wants them accessible for reporting).
+const SENSITIVE_COLUMN_PATTERNS = [
+  "encrypted_password",
+  "password_hash",
+  "token_hash",
+  "refresh_token",
+  "access_token",
+  "secret",
+  "api_key",
+  "service_role",
+];
+
+/// Schemas the model must never reach. `public` is the only allowed
+/// namespace. Auth schema (users, sessions), storage schema (buckets,
+/// objects w/ path metadata), realtime internals, cron, vault, and the
+/// pg_* / information_schema catalogs are all off-limits.
+const BLOCKED_SCHEMA_PATTERNS = [
+  /\bauth\.[A-Za-z_][\w]*\b/i,
+  /\bstorage\.[A-Za-z_][\w]*\b/i,
+  /\brealtime\.[A-Za-z_][\w]*\b/i,
+  /\bcron\.[A-Za-z_][\w]*\b/i,
+  /\bpg_[A-Za-z_][\w]*\b/i,
+  /\bvault\.[A-Za-z_][\w]*\b/i,
+  /\binformation_schema\.[A-Za-z_][\w]*\b/i,
+  /\bpg_catalog\b/i,
+];
+
+/// Keywords that must not appear anywhere in the query — DML + DDL.
+/// The RPC wrapper also structurally rejects these (they can't appear as
+/// subqueries in Postgres), but a client-side check gives a friendlier
+/// error and avoids a round-trip.
+const BANNED_KEYWORDS =
+  /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY|MERGE|CALL|EXECUTE|PREPARE|VACUUM|CLUSTER|REINDEX|LOCK|COMMENT\s+ON|SECURITY\s+DEFINER)\b/i;
+
+/// Strips known-sensitive keys from every row. Preserves everything else
+/// so the model can still report emails, phones, amounts, etc.
+function stripSensitiveColumns(rows: unknown): unknown {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map((row) => {
+    if (row === null || typeof row !== "object") return row;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+      const lk = k.toLowerCase();
+      if (SENSITIVE_COLUMN_PATTERNS.some((p) => lk.includes(p))) continue;
+      out[k] = v;
+    }
+    return out;
+  });
+}
+
+async function toolRunReadQuery(
+  admin: SupabaseClient,
+  args: { sql?: string; description?: string },
+): Promise<Record<string, unknown>> {
+  const sql = (args.sql ?? "").trim().replace(/;+\s*$/g, "");
+  const description = (args.description ?? "").trim();
+
+  if (!sql) {
+    return { eroare: "Interogare goală. Trimite un SELECT valid." };
+  }
+  if (sql.length > 4000) {
+    return { eroare: "Interogare prea lungă (>4000 caractere). Simplific-o." };
+  }
+
+  // Statement kind check — allow SELECT and WITH ... SELECT only.
+  const firstToken = sql.match(/^\s*(\w+)/)?.[1]?.toUpperCase() ?? "";
+  if (firstToken !== "SELECT" && firstToken !== "WITH") {
+    return {
+      eroare:
+        "Doar SELECT sau WITH permise. Query-ul tău începe cu " +
+        `"${firstToken}".`,
+    };
+  }
+
+  // Keyword blocklist.
+  const bannedMatch = sql.match(BANNED_KEYWORDS);
+  if (bannedMatch) {
+    return {
+      eroare:
+        `Cuvântul cheie "${bannedMatch[0]}" nu este permis. ` +
+        "run_read_query e strict pentru citire.",
+    };
+  }
+
+  // Schema whitelist — only public.
+  for (const pattern of BLOCKED_SCHEMA_PATTERNS) {
+    const m = sql.match(pattern);
+    if (m) {
+      return {
+        eroare:
+          `Referință la schema restricționată "${m[0]}" respinsă. ` +
+          "Doar schema public este accesibilă.",
+      };
+    }
+  }
+
+  // Auto-append LIMIT 200 if the query has no LIMIT of its own.
+  const hasLimit = /\bLIMIT\s+\d+\b/i.test(sql);
+  const finalSql = hasLimit ? sql : `${sql} LIMIT 200`;
+
+  // Call the RPC.
+  const { data, error } = await admin.rpc("exec_readonly_sql", {
+    query: finalSql,
+  });
+  if (error) {
+    return {
+      eroare: `RPC eșuat: ${error.message}`,
+      sql_incercat: finalSql.slice(0, 300),
+    };
+  }
+  // The RPC returns either jsonb array of rows OR a jsonb object with
+  // {eroare, sqlstate} when the wrapped query threw.
+  if (data && typeof data === "object" && !Array.isArray(data) && "eroare" in data) {
+    return {
+      eroare: `Interogare eșuată: ${(data as { eroare?: string }).eroare}`,
+      sqlstate: (data as { sqlstate?: string }).sqlstate,
+      sql_incercat: finalSql.slice(0, 300),
+    };
+  }
+
+  const filteredRows = stripSensitiveColumns(data);
+  const rowCount = Array.isArray(filteredRows) ? filteredRows.length : 0;
+
+  return {
+    description,
+    sql_executat: finalSql,
+    row_count: rowCount,
+    rows: filteredRows,
+    nota: rowCount >= 200 && !hasLimit
+      ? "Rezultatul a fost tăiat automat la 200 rânduri. Adaugă un LIMIT " +
+        "explicit sau rafinează filtrul dacă vrei un set specific."
+      : undefined,
+  };
 }
 
 async function dispatchTool(
@@ -6822,6 +7057,13 @@ async function dispatchToolInner(
         );
       case "get_workshop_name_quality_issues":
         return await toolGetWorkshopNameQualityIssues(admin);
+
+      // ── Escape hatch — arbitrary SELECT ────────────────────────────────
+      case "run_read_query":
+        return await toolRunReadQuery(
+          admin,
+          args as { sql?: string; description?: string },
+        );
 
       default:
         return { eroare: `Tool necunoscut: ${name}` };
