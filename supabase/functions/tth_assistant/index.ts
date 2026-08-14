@@ -95,7 +95,7 @@ Catalog de domenii acoperite de tool-uri:
 - Ateliere: get_workshops (today/this_week/next_week/custom), get_workshops_by_type, get_workshops_by_trainer, get_active_workshop_series, get_workshop_children, get_most_popular_workshops, get_workshops_without_children, get_workshops_without_trainer, get_workshop_capacity_summary
 - Traineri: get_trainers_summary, get_trainer_profile, get_trainer_workload, get_trainer_week_schedule
 - Părinți: get_parent_account_status, search_parent_by_name_or_email, get_parent_children, get_pending_parent_setups, get_expired_parent_setups
-- Plăți: get_financial_summary, get_payments_due, get_payment_method_summary, get_advance_paid_cycles, get_cancelled_payment_cycles, get_payment_cycles_by_child
+- Plăți: get_financial_summary, get_payments_due, get_payments_by_method, get_advance_paid_cycles, get_cancelled_payment_cycles, get_payment_cycles_by_child
 - Demo: get_demo_workshops_summary
 - Notificări: get_notifications_summary, get_recent_notifications
 - Risc & analiză: get_risk_children, get_admin_priority_list, get_weekly_action_plan, get_growth_opportunities
@@ -163,6 +163,66 @@ Exemple de mapare promptă → tool:
 - "Suma totală încasată" / "suma restantă" → get_payment_amount_summary (cu nota privind sumele lipsă)
 - "Plăți confirmate în ultimele 30 de zile" → get_recent_confirmed_payments
 - "Cine e aproape de următorul ciclu de plată" → get_children_near_payment_cycle
+
+Plăți pe METODĂ — SINGURUL tool disponibil: `get_payments_by_method`. Îl folosești pentru ORICE întrebare despre plăți per metodă, indiferent de formulare (nume, agregat, distribuție, count). Nu există alt tool concurent. Câmpurile din răspunsul lui acoperă atât detalii individuale (pe_metoda.<METODĂ>.plati[] cu nume + sume + confirmatori) cât și agregate (pe_metoda.<METODĂ>.total, total_plati, total_suma). Pentru „distribuția pe metode luna aceasta" apelezi tot `get_payments_by_method` cu `methods=["pos","op","unknown"]` + fereastra dorită, apoi citești numerele din `pe_metoda.*.total`.
+
+DEZAMBIGUARE lună calendaristică (rezolvă „luna X" ÎNAINTE să chemi tool-ul):
+- „luna ianuarie" / „ianuarie" → month=1
+- „luna februarie" / „februarie" → month=2
+- „luna martie" / „martie" → month=3
+- „luna aprilie" / „aprilie" → month=4
+- „luna mai" / „mai" (când e nume de lună, NU adverb) → month=5. Contextul: dacă „mai" apare după „luna", „în", „din" → este luna 5. Nu-l interpreta ca „mai mult".
+- „luna iunie" / „iunie" → month=6
+- „luna iulie" / „iulie" → month=7
+- „luna august" / „august" → month=8
+- „luna septembrie" / „septembrie" → month=9
+- „luna octombrie" / „octombrie" → month=10
+- „luna noiembrie" / „noiembrie" → month=11
+- „luna decembrie" / „decembrie" → month=12
+- „luna aceasta" / „luna curentă" → month = luna curentă (folosește data curentă din sistem)
+- „luna trecută" → month = luna anterioară (dacă luna curentă e 1, atunci month=12 și year-=1)
+Dacă utilizatorul nu specifică anul, folosește anul curent.
+
+
+Parametrii cheie:
+- methods: ARRAY de metode ("pos", "op", "unknown"). Include multiple metode când utilizatorul întreabă despre mai multe. Pentru "toate plățile POS și OP" trimite methods=["pos", "op"].
+- year + month: pentru fereastră de o lună calendaristică. Ex: "în luna iunie" → year=2026, month=6 (dacă anul e omis, se folosește anul curent).
+- days: fallback când nu se specifică o lună. Implicit 30.
+- limit_per_method: implicit 100, taie fiecare grup separat.
+
+Routing rules (fii strict):
+- "cine a plătit cu POS", "cine a plătit cu cardul", "plăți POS", "plăți card", "plăți cu cardul" → methods=["pos"]
+- "cine a plătit cu OP", "cine a plătit prin OP", "plăți prin OP", "plăți OP" → methods=["op"]
+- "cine a plătit prin transfer", "prin transfer bancar", "bank transfer", "ordin de plată" → methods=["op"]
+- "arată-mi toate plățile POS și OP din iunie", "grupează plățile după metodă", "POS și OP" → methods=["pos", "op"] + year+month dacă se specifică luna
+- "toate plățile confirmate din luna X" (fără a specifica metoda) → methods=["pos", "op", "unknown"] + year+month
+- "Pentru fiecare plată POS sau OP, spune-mi copilul, suma, data și cine a confirmat-o" → methods=["pos", "op"] — răspunde cu detalii per plată, NU cu un simplu total.
+- "Câte plăți POS sunt confirmate luna aceasta?" → methods=["pos"] cu year+month = luna curentă (folosește "total_plati" din răspuns pentru numărare)
+- "Plăți confirmate fără metodă înregistrată" → methods=["unknown"]
+- "Distribuția plăților pe metode" → tot get_payments_by_method (methods=["pos","op","unknown"]), apoi citește pe_metoda.*.total din răspuns. NU există alt tool separat pentru distribuție.
+
+Terminologie metode de plată — folosește EXACT aceste alias-uri și nu inventa altele:
+- POS = plată cu cardul (la POS-ul centrului). Alias-uri acceptate: "POS", "card", "cu cardul", "prin POS".
+- OP = ordin de plată = transfer bancar. Alias-uri acceptate: "OP", "transfer", "transfer bancar", "bank transfer", "ordin de plată", "prin transfer".
+- Dacă utilizatorul întreabă despre o metodă care NU e POS sau OP (ex: "cash", "numerar", "cec", "PayPal"), NU inventa un răspuns. Apelează get_payments_by_method cu methods=["pos","op","unknown"] și explică politicos, pe baza rezultatelor, că doar POS și OP sunt înregistrate în sistem.
+
+Cum raportezi rezultatele din get_payments_by_method:
+- Menționează fereastra (câmpul "fereastra" din răspuns).
+- GRUPEAZĂ plățile pe metodă folosind câmpul "pe_metoda" din răspuns. Pentru fiecare grup afișează:
+    POS:
+    1. <copil> — <suma> RON — <confirmed_at (format DD.MM.YYYY)> — confirmată de <confirmat_de>.
+    2. …
+    OP:
+    1. …
+- REGULĂ ABSOLUTĂ (nu-i sări niciodată): dacă tool-ul returnează plăți în "pe_metoda.<METODĂ>.plati", TREBUIE să listezi fiecare plată individual cu câmpul "copil" din acel row. NU răspunde cu doar totalul. NU spune că "numele nu sunt disponibile" — câmpul "copil" există pe FIECARE row returnat de tool. Dacă nu îl vezi, îl scoți din payload-ul care ți s-a livrat, nu din memorie.
+- Fiecare plată din "pe_metoda.<METODĂ>.plati" TREBUIE afișată cu: numele copilului ("copil"), suma ("suma" + "moneda" — folosește "RON" ca fallback dacă moneda e null), data confirmării ("confirmed_at", format DD.MM.YYYY), și cine a confirmat ("confirmat_de"). Dacă "confirmed_at" e null, folosește "created_at" în loc și scrie "înregistrat la" în loc de "confirmat la".
+- Câmpuri opționale de menționat când sunt cerute explicit sau când completează contextul: numele părintelui ("parinte"), status ("Plată confirmată" pentru "paid" sau "Achitat în avans" pentru "paid_advance"), perioada ciclului ("perioada"), ședințe ("sedinte").
+- Dacă un câmp opțional e null (ex: părinte lipsă), scrie "nu este înregistrat", NU spune că datele nu pot fi obținute.
+- Fallback pentru copii nerezolvați: dacă "copil" începe cu "child_id: … (nume nerezolvat)", listează totuși plata cu acel string ca identificator. Nu o omite. Asta arată clar că datele sunt în DB dar RLS-ul (sau un rând ștears) ascunde numele.
+- Dacă răspunsul are "total_suma" prezent (nenull), adaugă un sumar la final: "Total: X RON încasat prin <metode> în perioada Y".
+- Dacă un grup are 0 plăți, spune-o explicit: "POS: nicio plată în această perioadă" — NU omite grupul.
+- Dacă răspunsul are câmpul "nota" nenull, transcrie-l în răspuns și NU inventa sume.
+- Ignoră blocul "debug" din răspuns — e pentru diagnostic, nu pentru utilizator.
 - "Cele mai bune/slabe ateliere" → get_attendance_by_workshop_rankings (sample-size ≥ 3 implicit)
 - "Probleme cu denumirile atelierelor" → get_workshop_name_quality_issues
 
@@ -809,15 +869,80 @@ const TOOLS: ToolDef[] = [
   },
 
   // ── Payments ──────────────────────────────────────────────────────────────
+  //
+  // Note: get_payment_method_summary was removed on 2026-07-09. It was a
+  // pure aggregate (POS/OP counts, no names) that competed with
+  // get_payments_by_method for routing and caused GPT-4o-mini to
+  // inconsistently pick the aggregate one — even when the user asked
+  // "cine a plătit cu POS" (which needs names). Since get_payments_by_method
+  // already returns per-method totals in `pe_metoda.<METHOD>.total`,
+  // no functionality was lost: distribution questions read the totals
+  // from that response instead. Deleting the tool eliminates the
+  // routing ambiguity entirely.
   {
-    name: "get_payment_method_summary",
+    name: "get_payments_by_method",
     description:
-      "Repartiția plăților confirmate pe metodă (POS/OP/etc.) într-o fereastră de zile.",
+      "Listează plățile confirmate filtrate după una sau mai multe metode (POS, " +
+      "OP/transfer bancar, unknown). Rezultatele sunt grupate pe metodă. " +
+      "Pentru fiecare plată returnează: id ciclu, nume copil, numele părintelui, " +
+      "sumă, monedă, data plății (paid_at), created_at, status, metodă, " +
+      "confirmed_by (numele utilizatorului care a confirmat plata), perioada " +
+      "ciclului, ședințe. Folosește pentru: 'cine a plătit cu POS', 'cine a " +
+      "plătit prin OP', 'arată-mi toate plățile POS și OP din iunie', 'grupează " +
+      "plățile după metodă'. Alias-uri recunoscute automat: 'card' → pos; " +
+      "'transfer', 'transfer bancar', 'bank transfer', 'ordin de plată' → op.",
     parameters: {
       type: "object",
       properties: {
-        days: { type: "integer", minimum: 7, maximum: 365 },
+        methods: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["pos", "op", "unknown"],
+          },
+          minItems: 1,
+          uniqueItems: true,
+          description:
+            "Metodele de plată de returnat. Poate conține una sau mai multe din " +
+            "'pos' (card/POS), 'op' (transfer bancar / OP / ordin de plată), " +
+            "'unknown' (plăți confirmate fără metodă înregistrată). Pentru " +
+            "'arată-mi POS și OP' trimite [\"pos\", \"op\"].",
+        },
+        year: {
+          type: "integer",
+          minimum: 2020,
+          maximum: 2100,
+          description:
+            "Anul ferestrei de căutare. Combinat cu [month] restrânge la o " +
+            "lună calendaristică (paid_at ∈ [1-a, ultima_zi]). Dacă lipsește " +
+            "și există [month], se folosește anul curent.",
+        },
+        month: {
+          type: "integer",
+          minimum: 1,
+          maximum: 12,
+          description:
+            "Luna (1-12). Combinată cu [year] filtrează plățile cu paid_at " +
+            "în acea lună. Ignorat dacă lipsește.",
+        },
+        days: {
+          type: "integer",
+          minimum: 1,
+          maximum: 365,
+          description:
+            "Fereastra de zile în urmă când NU se folosește year/month " +
+            "(implicit 30).",
+        },
+        limit_per_method: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description:
+            "Maxim plăți returnate per metodă (implicit 100). Grupele fiecărei " +
+            "metode sunt tăiate separat la această limită.",
+        },
       },
+      required: ["methods"],
       additionalProperties: false,
     },
   },
@@ -1781,7 +1906,8 @@ async function toolGetPaymentsDue(
   const { data } = await admin
     .from("payment_cycles")
     .select(
-      "status, period_start, period_end, sessions_count, " +
+      "child_id, status, payment_method, period_start, period_end, " +
+        "sessions_count, paid_at, confirmed_by, " +
         "children!inner(first_name, last_name, payment_type)",
     )
     .in("status", statuses)
@@ -1791,10 +1917,14 @@ async function toolGetPaymentsDue(
     .limit(50);
 
   const rows = (data ?? []) as Array<{
+    child_id: string;
     status: string | null;
+    payment_method: string | null;
     period_start: string | null;
     period_end: string | null;
     sessions_count: number | null;
+    paid_at: string | null;
+    confirmed_by: string | null;
     children:
       | { first_name: string | null; last_name: string | null; payment_type: string | null }
       | null;
@@ -1811,7 +1941,9 @@ async function toolGetPaymentsDue(
       copil: r.children
         ? fullName(r.children.first_name, r.children.last_name)
         : null,
+      child_id: r.child_id,
       status: r.status,
+      metoda: (r.payment_method ?? "").toUpperCase() || null,
       perioada: `${r.period_start} – ${r.period_end}`,
       sedinte: r.sessions_count,
     })),
@@ -3924,36 +4056,366 @@ async function toolGetExpiredParentSetups(
 }
 
 // ── Payments ────────────────────────────────────────────────────────────────
+//
+// The old toolGetPaymentMethodSummary was removed on 2026-07-09 — the
+// same aggregate data (per-method counts) is now returned inside
+// toolGetPaymentsByMethod under `pe_metoda.<METHOD>.total`, so we can
+// present a single tool to the model and eliminate the routing
+// ambiguity that made "cine a plătit cu POS" respond with counts
+// instead of names.
 
-async function toolGetPaymentMethodSummary(
+/// Method key used internally by [toolGetPaymentsByMethod].
+type MethodKey = "pos" | "op" | "unknown";
+
+/// Raw shape read from `payment_cycles`. Children and confirmer profiles
+/// are joined in code via batched follow-up queries — we intentionally
+/// do NOT use PostgREST's `children!inner(...)` embedding because in
+/// some environments the FK is not auto-detected (or the schema cache
+/// is stale), causing the embed to silently return null. That was the
+/// bug the previous iteration hit: `!inner` dropped rows AND the model
+/// then reported "child names not available". The explicit
+/// batched-join approach here is bulletproof regardless of whether
+/// PostgREST introspection is healthy.
+interface PaymentCycleRow {
+  id: string;
+  child_id: string;
+  status: string | null;
+  payment_method: string | null;
+  paid_at: string | null;
+  created_at: string | null;
+  confirmed_by: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  sessions_count: number | null;
+  notes: string | null;
+}
+
+/// Lists confirmed payments grouped by method (POS / OP / null).
+///
+/// Query flow (three batched round-trips, no PostgREST embed):
+///   1. Fetch payment_cycles rows filtered by status + paid_at window +
+///      payment_method (one query per method group so per-method limit
+///      is enforced independently; queries run in parallel).
+///   2. Collect distinct child_id values → fetch children by id (single
+///      SELECT). Filter out `payment_type = 'free'` in memory.
+///   3. Collect distinct confirmed_by ids → fetch profiles by id
+///      (single SELECT).
+///
+/// Every output row is FLAT: no nested `children` object. Fields:
+///   • payment_cycle_id, child_id, child_first_name, child_last_name,
+///     copil (full name), parinte (children.parent_name)
+///   • status ('paid' | 'paid_advance'), metoda (upper-cased or null)
+///   • suma + moneda when amount is available; else null + top-level
+///     nota that the caller must transcribe verbatim
+///   • confirmed_at (paid_at, YYYY-MM-DD), created_at, confirmed_by
+///     (raw id preserved for auditing), confirmat_de (confirmer full
+///     name from the batched profiles fetch)
+///   • perioada (period_start – period_end), sedinte, ciclu_note
+///
+/// When a child_id can't be resolved to a name (child row missing or
+/// hidden by RLS), `copil` becomes the debug string
+/// "child_id: <uuid> (nume nerezolvat)" so the model has a stable
+/// non-null anchor. Same idea for confirmer.
+///
+/// The `debug` block at the top of the response reports counts of
+/// (a) cycles fetched, (b) children fetched, (c) confirmers fetched,
+/// (d) rows dropped because payment_type=='free'. Lets us diagnose
+/// mismatches without shipping a second-tool round trip.
+///
+/// Aliases normalised at the entry point: card→pos, transfer/transfer
+/// bancar/bank transfer/ordin de plată→op, unknown/necunoscut/null→
+/// unknown. Mirrors the system-prompt glossary.
+async function toolGetPaymentsByMethod(
   admin: SupabaseClient,
-  args: { days?: number },
+  args: {
+    methods?: string[];
+    method?: string;
+    year?: number;
+    month?: number;
+    days?: number;
+    limit_per_method?: number;
+  },
 ): Promise<Record<string, unknown>> {
-  const days = Math.min(Math.max(args.days ?? 90, 7), 365);
-  const since = ymd(addDays(new Date(), -days));
-  const { data } = await admin
-    .from("payment_cycles")
-    .select("payment_method, status, paid_at, children!inner(payment_type)")
-    .in("status", ["paid", "paid_advance"])
-    .gte("paid_at", since)
-    // Free participants never carry a financial signal.
-    .eq("children.payment_type", "paid");
-  const rows = (data ?? []) as Array<{
-    payment_method: string | null;
-    status: string | null;
-    paid_at: string | null;
-  }>;
-  const counts = new Map<string, number>();
-  for (const r of rows) {
-    const m = (r.payment_method ?? "necunoscut").toUpperCase();
-    counts.set(m, (counts.get(m) ?? 0) + 1);
+  const methodMap: Record<string, MethodKey> = {
+    "pos": "pos",
+    "card": "pos",
+    "op": "op",
+    "transfer": "op",
+    "transfer bancar": "op",
+    "bank transfer": "op",
+    "ordin de plata": "op",
+    "ordin de plată": "op",
+    "unknown": "unknown",
+    "necunoscut": "unknown",
+    "null": "unknown",
+  };
+  // Accept either the new `methods: string[]` or the legacy scalar
+  // `method: string` (older callers). Legacy scalar defaults to "pos".
+  const rawMethods = Array.isArray(args.methods) && args.methods.length > 0
+    ? args.methods
+    : (args.method ? [args.method] : ["pos"]);
+  const methods: MethodKey[] = Array.from(
+    new Set(
+      rawMethods
+        .map((m) => methodMap[(m ?? "").toLowerCase().trim()])
+        .filter((m): m is MethodKey => !!m),
+    ),
+  );
+  if (methods.length === 0) methods.push("pos");
+
+  // Time window: year+month wins over `days`.
+  const limitPerMethod = Math.min(
+    Math.max(args.limit_per_method ?? 100, 1),
+    200,
+  );
+  let sinceIso: string;
+  let untilIso: string | null = null;
+  let windowLabel: string;
+  if (args.month) {
+    const now = new Date();
+    const year = args.year ?? now.getUTCFullYear();
+    const monthIdx = args.month - 1;
+    const start = new Date(Date.UTC(year, monthIdx, 1));
+    const end = new Date(Date.UTC(year, monthIdx + 1, 0));
+    sinceIso = ymd(start);
+    untilIso = ymd(end);
+    windowLabel = `${sinceIso} – ${untilIso}`;
+  } else {
+    const days = Math.min(Math.max(args.days ?? 30, 1), 365);
+    sinceIso = ymd(addDays(new Date(), -days));
+    windowLabel = `ultimele ${days} zile (de la ${sinceIso})`;
   }
+
+  // ── Query 1: payment_cycles (one per method, parallel) ────────────
+  //
+  // No `children!inner(...)` embed. Free-participant filtering is
+  // deferred to the in-memory merge step so the query is not gated on
+  // PostgREST's FK auto-detection.
+  let amountAvailable = true;
+  const probe = await admin.from("payment_cycles").select("amount").limit(1);
+  if (probe.error) {
+    const code = (probe.error as { code?: string }).code;
+    if (code === "42703" || (probe.error.message ?? "").includes("amount")) {
+      amountAvailable = false;
+    }
+  }
+  const selectCols = amountAvailable
+    ? "id, child_id, status, payment_method, paid_at, created_at, " +
+      "confirmed_by, amount, currency, period_start, period_end, " +
+      "sessions_count, notes"
+    : "id, child_id, status, payment_method, paid_at, created_at, " +
+      "confirmed_by, period_start, period_end, sessions_count, notes";
+
+  const perMethodQueries = methods.map((m) => {
+    let q = admin
+      .from("payment_cycles")
+      .select(selectCols)
+      .in("status", ["paid", "paid_advance"])
+      .gte("paid_at", sinceIso)
+      .order("paid_at", { ascending: false })
+      .limit(limitPerMethod);
+    if (untilIso) q = q.lte("paid_at", untilIso);
+    if (m === "unknown") {
+      q = q.is("payment_method", null);
+    } else {
+      q = q.eq("payment_method", m);
+    }
+    return q;
+  });
+  const perMethodResults = await Promise.all(perMethodQueries);
+
+  // ── Query 2: children (single batched fetch) ──────────────────────
+  const allChildIds = new Set<string>();
+  for (const res of perMethodResults) {
+    const rows = (res.data ?? []) as PaymentCycleRow[];
+    for (const r of rows) {
+      if (r.child_id) allChildIds.add(r.child_id);
+    }
+  }
+  const childMap = new Map<
+    string,
+    {
+      first_name: string | null;
+      last_name: string | null;
+      parent_name: string | null;
+      payment_type: string | null;
+    }
+  >();
+  let childrenFetched = 0;
+  if (allChildIds.size > 0) {
+    const { data: kids, error: kidsErr } = await admin
+      .from("children")
+      .select("id, first_name, last_name, parent_name, payment_type")
+      .in("id", Array.from(allChildIds));
+    if (!kidsErr) {
+      for (
+        const c of (kids ?? []) as Array<{
+          id: string;
+          first_name: string | null;
+          last_name: string | null;
+          parent_name: string | null;
+          payment_type: string | null;
+        }>
+      ) {
+        childMap.set(c.id, {
+          first_name: c.first_name,
+          last_name: c.last_name,
+          parent_name: c.parent_name,
+          payment_type: c.payment_type,
+        });
+      }
+      childrenFetched = kids?.length ?? 0;
+    }
+  }
+
+  // ── Query 3: confirmer profiles (single batched fetch) ────────────
+  const allConfirmerIds = new Set<string>();
+  for (const res of perMethodResults) {
+    const rows = (res.data ?? []) as PaymentCycleRow[];
+    for (const r of rows) {
+      if (r.confirmed_by) allConfirmerIds.add(r.confirmed_by);
+    }
+  }
+  const confirmerNames = new Map<string, string>();
+  let confirmersFetched = 0;
+  if (allConfirmerIds.size > 0) {
+    const { data: profs } = await admin
+      .from("profiles")
+      .select("id, first_name, last_name")
+      .in("id", Array.from(allConfirmerIds));
+    for (
+      const p of (profs ?? []) as Array<{
+        id: string;
+        first_name: string | null;
+        last_name: string | null;
+      }>
+    ) {
+      confirmerNames.set(p.id, fullName(p.first_name, p.last_name));
+    }
+    confirmersFetched = profs?.length ?? 0;
+  }
+
+  // ── Merge + flatten ──────────────────────────────────────────────
+  const mapRow = (r: PaymentCycleRow) => {
+    const amount = amountAvailable && typeof r.amount === "number"
+      ? r.amount
+      : null;
+    const child = childMap.get(r.child_id) ?? null;
+    // Fallback name string ensures every row has a non-null `copil`
+    // anchor even when RLS or a missing row hides the child. This makes
+    // debug in production straightforward — the model can quote the
+    // child_id back at the user.
+    const copil = child
+      ? fullName(child.first_name, child.last_name)
+      : `child_id: ${r.child_id} (nume nerezolvat)`;
+    const confirmatDe = r.confirmed_by
+      ? (confirmerNames.get(r.confirmed_by) ??
+        `confirmed_by: ${r.confirmed_by} (nume nerezolvat)`)
+      : null;
+    return {
+      payment_cycle_id: r.id,
+      child_id: r.child_id,
+      child_first_name: child?.first_name ?? null,
+      child_last_name: child?.last_name ?? null,
+      copil,
+      parinte: child?.parent_name ?? null,
+      status: r.status,
+      metoda: (r.payment_method ?? "").toUpperCase() || null,
+      suma: amount,
+      moneda: amount !== null ? (r.currency ?? "RON") : null,
+      confirmed_at: r.paid_at?.slice(0, 10) ?? null,
+      created_at: r.created_at?.slice(0, 10) ?? null,
+      confirmed_by: r.confirmed_by,
+      confirmat_de: confirmatDe,
+      perioada: r.period_start && r.period_end
+        ? `${r.period_start} – ${r.period_end}`
+        : null,
+      sedinte: r.sessions_count,
+      ciclu_note: (r.notes ?? "").trim() || null,
+    };
+  };
+
+  // ── Grouped assembly ──────────────────────────────────────────────
+  const groups: Record<string, {
+    total: number;
+    suma_totala: number | null;
+    plati: ReturnType<typeof mapRow>[];
+  }> = {};
+  let anyErr: string | null = null;
+  let grandTotal = 0;
+  let grandAmount = 0;
+  let anyAmountSeen = false;
+  let cyclesFetched = 0;
+  let droppedFree = 0;
+  for (let i = 0; i < methods.length; i++) {
+    const method = methods[i];
+    const res = perMethodResults[i];
+    const key = method === "unknown" ? "NECUNOSCUT" : method.toUpperCase();
+    if (res.error) {
+      anyErr = res.error.message;
+      groups[key] = { total: 0, suma_totala: null, plati: [] };
+      continue;
+    }
+    const rows = (res.data ?? []) as PaymentCycleRow[];
+    cyclesFetched += rows.length;
+    // Drop free-participant rows in memory (was previously done via
+    // `.eq("children.payment_type", "paid")` inside the join — but the
+    // join is gone).
+    const filtered = rows.filter((r) => {
+      const child = childMap.get(r.child_id);
+      if (child && child.payment_type === "free") {
+        droppedFree++;
+        return false;
+      }
+      return true;
+    });
+    const plati = filtered.map(mapRow);
+    let sumaTotala: number | null = null;
+    if (amountAvailable) {
+      sumaTotala = 0;
+      for (const p of plati) {
+        if (p.suma !== null) {
+          sumaTotala += p.suma;
+          grandAmount += p.suma;
+          anyAmountSeen = true;
+        }
+      }
+    }
+    grandTotal += plati.length;
+    groups[key] = {
+      total: plati.length,
+      suma_totala: sumaTotala,
+      plati,
+    };
+  }
+
   return {
-    fereastra_zile: days,
-    total_plati_confirmate: rows.length,
-    pe_metoda: Array.from(counts.entries())
-      .map(([metoda, n]) => ({ metoda, numar: n }))
-      .sort((a, b) => b.numar - a.numar),
+    metode_cerute: methods.map((m) =>
+      m === "unknown" ? "NECUNOSCUT" : m.toUpperCase()
+    ),
+    fereastra: windowLabel,
+    limit_per_metoda: limitPerMethod,
+    total_plati: grandTotal,
+    total_suma: amountAvailable && anyAmountSeen ? grandAmount : null,
+    moneda: amountAvailable && anyAmountSeen ? "RON" : null,
+    pe_metoda: groups,
+    debug: {
+      cycles_fetched: cyclesFetched,
+      children_fetched: childrenFetched,
+      confirmers_fetched: confirmersFetched,
+      dropped_free_participants: droppedFree,
+      unresolved_child_ids: Array.from(allChildIds).filter(
+        (id) => !childMap.has(id),
+      ).length,
+      unresolved_confirmer_ids: Array.from(allConfirmerIds).filter(
+        (id) => !confirmerNames.has(id),
+      ).length,
+    },
+    nota: amountAvailable
+      ? (anyErr ? `Interogare parțial eșuată: ${anyErr}` : null)
+      : "Coloana payment_cycles.amount nu există în această schemă — sumele lipsesc.",
   };
 }
 
@@ -5920,7 +6382,7 @@ function sourcesFor(toolName: string): string[] {
     // Plăți
     "get_payments_due": ["Plăți"],
     "get_financial_summary": ["Plăți"],
-    "get_payment_method_summary": ["Plăți"],
+    "get_payments_by_method": ["Plăți"],
     "get_advance_paid_cycles": ["Plăți"],
     "get_cancelled_payment_cycles": ["Plăți"],
     "get_payment_cycles_by_child": ["Plăți", "Copii"],
@@ -6225,10 +6687,17 @@ async function dispatchToolInner(
         );
 
       // Payments
-      case "get_payment_method_summary":
-        return await toolGetPaymentMethodSummary(
+      case "get_payments_by_method":
+        return await toolGetPaymentsByMethod(
           admin,
-          args as { days?: number },
+          args as {
+            methods?: string[];
+            method?: string;
+            year?: number;
+            month?: number;
+            days?: number;
+            limit_per_method?: number;
+          },
         );
       case "get_advance_paid_cycles":
         return await toolGetAdvancePaidCycles(
