@@ -12,15 +12,21 @@ class AttendanceSessionEditor extends StatefulWidget {
     super.key,
     required this.session,
     required this.onSave,
+    this.onDelete,
   });
 
   final ChildCalendarSession session;
   final Future<void> Function(String status, String? observation) onSave;
+  /// If provided AND the session has an existing attendance row, a
+  /// "Șterge" button appears. Meant to be passed by callers who have
+  /// verified the current user is an admin.
+  final Future<void> Function()? onDelete;
 
   static Future<void> show(
     BuildContext context, {
     required ChildCalendarSession session,
     required Future<void> Function(String status, String? observation) onSave,
+    Future<void> Function()? onDelete,
   }) {
     final isMobile = MediaQuery.of(context).size.width < 600;
     if (isMobile) {
@@ -33,7 +39,8 @@ class AttendanceSessionEditor extends StatefulWidget {
           padding: EdgeInsets.only(
             bottom: MediaQuery.of(context).viewInsets.bottom,
           ),
-          child: AttendanceSessionEditor(session: session, onSave: onSave),
+          child: AttendanceSessionEditor(
+              session: session, onSave: onSave, onDelete: onDelete),
         ),
       );
     }
@@ -45,7 +52,8 @@ class AttendanceSessionEditor extends StatefulWidget {
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 520),
-          child: AttendanceSessionEditor(session: session, onSave: onSave),
+          child: AttendanceSessionEditor(
+              session: session, onSave: onSave, onDelete: onDelete),
         ),
       ),
     );
@@ -60,6 +68,9 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
   late String _status;
   late final TextEditingController _obsCtrl;
   bool _saving = false;
+  bool _deleting = false;
+
+  bool get _busy => _saving || _deleting;
 
   @override
   void initState() {
@@ -83,6 +94,41 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
       Navigator.pop(context);
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _confirmDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Șterge prezența?'),
+        content: const Text(
+          'Rândul de prezență va fi eliminat complet din baza de date. '
+          'Folosește doar dacă a fost creat din greșeală (pentru absență '
+          'reală, marchează statusul „Absent"). Ciclurile de plată se '
+          'recalculează automat.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Anulează'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Șterge'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _deleting = true);
+    try {
+      await widget.onDelete!();
+      if (!mounted) return;
+      Navigator.pop(context);
+    } finally {
+      if (mounted) setState(() => _deleting = false);
     }
   }
 
@@ -168,16 +214,33 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
           ),
           const SizedBox(height: 16),
           Row(
-            mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              // Delete button (admin-only, only when the row already
+              // exists in the DB). Rendered on the far left so the
+              // primary save action stays anchored on the right.
+              if (widget.onDelete != null && s.hasAttendance)
+                TextButton.icon(
+                  onPressed: _busy ? null : _confirmDelete,
+                  icon: _deleting
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: AppColors.error),
+                        )
+                      : const Icon(Icons.delete_outline_rounded,
+                          size: 18, color: AppColors.error),
+                  label: const Text('Șterge',
+                      style: TextStyle(color: AppColors.error)),
+                ),
+              const Spacer(),
               TextButton(
-                onPressed:
-                    _saving ? null : () => Navigator.pop(context),
+                onPressed: _busy ? null : () => Navigator.pop(context),
                 child: const Text('Anulează'),
               ),
               const SizedBox(width: 8),
               FilledButton(
-                onPressed: _saving ? null : _save,
+                onPressed: _busy ? null : _save,
                 child: _saving
                     ? const SizedBox(
                         width: 16,

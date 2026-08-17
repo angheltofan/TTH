@@ -204,6 +204,27 @@ class AttendanceCalendarRepository {
     );
   }
 
+  /// Removes an `attendance` row entirely. Use ONLY for rows that were
+  /// created by mistake (wrong child, wrong session — not a "child was
+  /// absent" case, which should be recorded as `absent` instead).
+  ///
+  /// Admin-only guarded here + server-side via the
+  /// `attendance_delete_admin` RLS policy (`is_admin()`).
+  ///
+  /// The DB trigger `trg_recalculate_cycles_on_attendance` fires on
+  /// DELETE and re-runs `recalculate_child_series_payment_cycles` for
+  /// the affected (child, series), so payment cycles stay consistent
+  /// automatically.
+  Future<void> deleteAttendance({
+    required String attendanceId,
+    required bool isAdmin,
+  }) async {
+    if (!isAdmin) {
+      throw StateError('Only admins may delete attendance rows');
+    }
+    await _client.from('attendance').delete().eq('id', attendanceId);
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────────────
 
   Future<List<String>> _fetchActiveSeriesIds(String childId) async {

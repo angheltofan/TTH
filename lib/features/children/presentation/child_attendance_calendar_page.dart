@@ -298,11 +298,47 @@ class _ChildAttendanceCalendarModalState
       _showReadOnly(s);
       return;
     }
+    // Delete is admin-only + requires an existing attendance row. The
+    // repository double-checks the admin flag; RLS enforces it server-
+    // side via `attendance_delete_admin`.
+    final canDelete = profile.isAdmin && s.hasAttendance;
     await AttendanceSessionEditor.show(
       context,
       session: s,
       onSave: (status, obs) => _submit(s, status, obs),
+      onDelete: canDelete ? () => _deleteAttendance(s) : null,
     );
+  }
+
+  Future<void> _deleteAttendance(ChildCalendarSession s) async {
+    final profile = ref.read(currentProfileProvider).valueOrNull;
+    if (profile == null || !profile.isAdmin) return;
+    final attendanceId = s.attendanceId;
+    if (attendanceId == null) return;
+    try {
+      await ref
+          .read(attendanceCalendarRepositoryProvider)
+          .deleteAttendance(
+            attendanceId: attendanceId,
+            isAdmin: profile.isAdmin,
+          );
+      _invalidateAllProvidersForThisChild();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Prezența a fost ștearsă.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Nu s-a putut șterge prezența: $e'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
   }
 
   Future<void> _submit(
