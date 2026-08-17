@@ -40,18 +40,24 @@ class ChildDetailsRepository {
     return data != null ? ChildCurrentStatus.fromMap(data) : null;
   }
 
-  // ── Current cycle rows directly from attendance table ────────────────────
-  // Returns all rows where payment_cycle_id IS NULL and is_archived = false.
-  // This bypasses the child_current_status_rows view which may apply a date
-  // filter and miss older sessions still in the current open cycle.
+  // ── ALL non-archived attendance for a child (series-aware) ───────────────
   //
-  // For free participants the server never creates payment_cycles rows (a
-  // BEFORE INSERT trigger silently skips them), so EVERY unarchived
-  // attendance row stays with `payment_cycle_id IS NULL` forever. Walking
-  // through this set chronologically and grouping into blocks of four
-  // presents gives the same visual "X / 4 → reset to 0 / 4" behavior as
-  // the paid workflow without ever generating a financial obligation.
-
+  // Returns every non-archived attendance row for the child with resolved
+  // series info + payment_cycle_id. The UI does the "current cycle" vs
+  // "belongs to a closed cycle" classification chronologically per series
+  // — this is the ONLY source of truth for both CurrentStatusCard and
+  // PaymentStatusCard because:
+  //
+  //   • PRESENT rows in a closed cycle carry `payment_cycle_id = cycle.id`
+  //     (financial linkage)
+  //   • ABSENT rows always carry `payment_cycle_id = NULL`, so relying on
+  //     this column to decide "current cycle membership" leaks historical
+  //     absences into the current block (bug reported 2026-08-20).
+  //
+  // For free participants the server never creates payment_cycles rows
+  // (BEFORE INSERT trigger blocks them), so a chronological windowing
+  // pass is applied client-side per series so the UI shows the same
+  // "X / 4 → reset to 0 / 4" pattern without a financial cycle.
   Future<List<ChildCurrentStatusRow>> fetchChildCurrentStatusRows(
       String childId, {
     bool isFreeParticipant = false,
@@ -59,13 +65,12 @@ class ChildDetailsRepository {
     final data = await _client
         .from('attendance')
         .select(
-            'id, child_id, status, observation, '
+            'id, child_id, status, observation, payment_cycle_id, '
             'scheduled_workshops!scheduled_workshop_id('
             'title, workshop_date, day_of_week, start_time, end_time, '
             'series_id, recurring_series_id, '
             'workshop_series!series_id(title))')
         .eq('child_id', childId)
-        .filter('payment_cycle_id', 'is', null)
         .eq('is_archived', false);
 
     final rows = (data as List).map((e) {
@@ -88,6 +93,7 @@ class ChildDetailsRepository {
         observation: map['observation'] as String?,
         seriesId: resolvedSeriesId,
         seriesTitle: wsEmbed?['title'] as String?,
+        paymentCycleId: map['payment_cycle_id'] as String?,
       );
     }).toList();
 
@@ -100,31 +106,51 @@ class ChildDetailsRepository {
     });
 
     if (!isFreeParticipant) return rows;
-    return _windowToCurrentFourPresentBlock(rows);
+    // Free children: no cycles exist server-side, so window the rows
+    // per series to emulate the same "current block" semantics.
+    return _windowToCurrentFourPresentBlockPerSeries(rows);
   }
 
-  /// Returns the trailing slice of [rows] that comes AFTER the most recent
-  /// 4th-present row. Walks chronologically: every time the running count
-  /// of `present` rows hits four, the in-progress block is discarded and
-  /// the counter resets. Anything past the last discard is the "current
-  /// open block" — exactly what the paid view shows once
-  /// `payment_cycle_id` resets to NULL.
-  List<ChildCurrentStatusRow> _windowToCurrentFourPresentBlock(
+  /// Free-participant windowing, per series. For each series, keeps only
+  /// the rows AFTER the most recent 4th-PRESENT boundary, so the UI shows
+  /// the same "current block" resetting to 0/4 as paid children get from
+  /// server-side payment_cycles. Applied per-series so a child enrolled
+  /// in multiple free workshops sees independent counters.
+  List<ChildCurrentStatusRow> _windowToCurrentFourPresentBlockPerSeries(
       List<ChildCurrentStatusRow> rows) {
-    var presentCount = 0;
-    var blockStart = 0;
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].attendanceStatus == 'present') {
-        presentCount += 1;
-        if (presentCount == 4) {
-          // The 4th present closes the block; the next row begins a fresh one.
-          blockStart = i + 1;
-          presentCount = 0;
+    // Group by seriesId (nullable → group under empty key so the row
+    // isn't lost).
+    final bySeries = <String, List<ChildCurrentStatusRow>>{};
+    for (final r in rows) {
+      final key = r.seriesId ?? '';
+      bySeries.putIfAbsent(key, () => []).add(r);
+    }
+    final out = <ChildCurrentStatusRow>[];
+    for (final entry in bySeries.entries) {
+      final seriesRows = entry.value; // already sorted
+      var presentCount = 0;
+      var blockStart = 0;
+      for (var i = 0; i < seriesRows.length; i++) {
+        if (seriesRows[i].attendanceStatus == 'present') {
+          presentCount += 1;
+          if (presentCount == 4) {
+            blockStart = i + 1;
+            presentCount = 0;
+          }
         }
       }
+      if (blockStart < seriesRows.length) {
+        out.addAll(seriesRows.sublist(blockStart));
+      }
     }
-    if (blockStart >= rows.length) return const [];
-    return rows.sublist(blockStart);
+    // Re-sort combined output to keep chronological order across series.
+    out.sort((a, b) {
+      final d = (a.workshopDate ?? DateTime(0))
+          .compareTo(b.workshopDate ?? DateTime(0));
+      if (d != 0) return d;
+      return (a.startTime ?? '').compareTo(b.startTime ?? '');
+    });
+    return out;
   }
 
   // ── Payment history rows from child_payment_status_rows view ──────────────

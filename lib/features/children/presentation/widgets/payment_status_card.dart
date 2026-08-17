@@ -15,17 +15,20 @@ import 'payment_cycle_card.dart';
 import 'payment_dialog.dart';
 import 'payment_status_helpers.dart';
 
-/// Payment status card, series-aware.
+/// Payment status, series-aware + chronologically correct.
 ///
-/// Since migration 20260820, payment cycles are per (child, series).
-/// This widget:
-///   1. Fetches all data at parent level (rows + cycles + open block).
-///   2. Groups by `series_id` using the cycle table (source of truth).
-///   3. Renders one [_SeriesPaymentSection] per series.
+/// Since 2026-08-21 attendance-to-cycle membership is determined by
+/// chronology, not by `attendance.payment_cycle_id`:
 ///
-/// Each section keeps the previous single-series behavior verbatim
-/// (active cycle vs past cycles, due/overdue/paid grouping, advance
-/// consumption UI). Section boundaries are visual dividers.
+///   • Historical cycle card contains every attendance row (present +
+///     absent) belonging to the same series whose `workshop_date` falls
+///     inside `[period_start, period_end]`.
+///   • Current/active section contains rows in the same series whose
+///     `workshop_date` is strictly AFTER the latest completed cycle's
+///     `period_end` — and are not already linked to any financial cycle.
+///
+/// Financial semantics are unchanged: only PRESENT rows count toward the
+/// four-session threshold; `sessions_count` remains 4.
 class PaymentStatusCard extends ConsumerWidget {
   const PaymentStatusCard({super.key, required this.childId});
   final String childId;
@@ -33,16 +36,12 @@ class PaymentStatusCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final paymentRowsAsync =
-        ref.watch(childPaymentStatusRowsProvider(childId));
-    final currentRowsAsync =
+    final attendanceAsync =
         ref.watch(childCurrentStatusRowsProvider(childId));
     final paymentCyclesAsync =
         ref.watch(childPaymentCyclesNewProvider(childId));
 
-    if (paymentRowsAsync.isLoading ||
-        currentRowsAsync.isLoading ||
-        paymentCyclesAsync.isLoading) {
+    if (attendanceAsync.isLoading || paymentCyclesAsync.isLoading) {
       return const DetailsSectionCard(
         title: 'Status plată',
         iconData: Icons.credit_card_rounded,
@@ -54,35 +53,26 @@ class PaymentStatusCard extends ConsumerWidget {
       );
     }
 
-    if (paymentRowsAsync.hasError) {
+    if (attendanceAsync.hasError) {
       return DetailsSectionCard(
         title: 'Status plată',
         iconData: Icons.credit_card_rounded,
         iconColor: const Color(0xFF3B82F6),
-        child: AppError(message: paymentRowsAsync.error.toString()),
+        child: AppError(message: attendanceAsync.error.toString()),
       );
     }
 
-    final allPaymentRows = paymentRowsAsync.valueOrNull ?? [];
-    final currentRows = currentRowsAsync.valueOrNull ?? [];
-    final paymentCycles = paymentCyclesAsync.valueOrNull ?? [];
+    final allAttendance = attendanceAsync.valueOrNull ?? const [];
+    final allCycles = paymentCyclesAsync.valueOrNull ?? const [];
 
-    // Build map cycleId → seriesId from the authoritative table, so we can
-    // attribute view rows (which lack series_id) to their series.
-    final cycleToSeries = <String, String>{};
-    for (final c in paymentCycles) {
-      if (c.seriesId != null) cycleToSeries[c.id] = c.seriesId!;
-    }
-
-    // Group by seriesId.
+    // Group everything by seriesId — cycles by series_id, attendance by
+    // its own series_id (populated by the join in fetchChildCurrentStatusRows).
     final seriesIds = <String>{
-      ...paymentCycles.map((c) => c.seriesId).whereType<String>(),
-      ...currentRows.map((r) => r.seriesId).whereType<String>(),
+      ...allCycles.map((c) => c.seriesId).whereType<String>(),
+      ...allAttendance.map((r) => r.seriesId).whereType<String>(),
     };
 
     if (seriesIds.isEmpty) {
-      // No series info at all — child has no cycles and no unlinked
-      // attendance. Show the classic empty state.
       return DetailsSectionCard(
         title: 'Status plată',
         iconData: Icons.credit_card_rounded,
@@ -95,25 +85,18 @@ class PaymentStatusCard extends ConsumerWidget {
       );
     }
 
-    // Sort series by title for deterministic ordering.
-    final orderedSeries = seriesIds.toList()
-      ..sort((a, b) {
-        String titleFor(String sid) {
-          for (final c in paymentCycles) {
-            if (c.seriesId == sid && c.seriesTitle != null) {
-              return c.seriesTitle!;
-            }
-          }
-          for (final r in currentRows) {
-            if (r.seriesId == sid && r.seriesTitle != null) {
-              return r.seriesTitle!;
-            }
-          }
-          return '~';
-        }
+    String titleFor(String sid) {
+      for (final c in allCycles) {
+        if (c.seriesId == sid && c.seriesTitle != null) return c.seriesTitle!;
+      }
+      for (final r in allAttendance) {
+        if (r.seriesId == sid && r.seriesTitle != null) return r.seriesTitle!;
+      }
+      return 'Atelier';
+    }
 
-        return titleFor(a).compareTo(titleFor(b));
-      });
+    final orderedSeries = seriesIds.toList()
+      ..sort((a, b) => titleFor(a).compareTo(titleFor(b)));
 
     return DetailsSectionCard(
       title: 'Status plată',
@@ -132,20 +115,11 @@ class PaymentStatusCard extends ConsumerWidget {
             _SeriesPaymentSection(
               childId: childId,
               seriesId: orderedSeries[i],
-              seriesTitle: _titleFor(
-                orderedSeries[i],
-                paymentCycles,
-                currentRows,
-              ),
-              paymentRows: _rowsForSeries(
-                orderedSeries[i],
-                allPaymentRows,
-                cycleToSeries,
-              ),
-              currentRows: currentRows
+              seriesTitle: titleFor(orderedSeries[i]),
+              seriesAttendance: allAttendance
                   .where((r) => r.seriesId == orderedSeries[i])
                   .toList(),
-              cycles: paymentCycles
+              seriesCycles: allCycles
                   .where((c) => c.seriesId == orderedSeries[i])
                   .toList(),
             ),
@@ -153,35 +127,6 @@ class PaymentStatusCard extends ConsumerWidget {
         ],
       ),
     );
-  }
-
-  static String _titleFor(
-    String seriesId,
-    List<ChildPaymentCycle> cycles,
-    List<ChildCurrentStatusRow> currentRows,
-  ) {
-    for (final c in cycles) {
-      if (c.seriesId == seriesId && c.seriesTitle != null) {
-        return c.seriesTitle!;
-      }
-    }
-    for (final r in currentRows) {
-      if (r.seriesId == seriesId && r.seriesTitle != null) {
-        return r.seriesTitle!;
-      }
-    }
-    return 'Atelier';
-  }
-
-  static List<ChildPaymentStatusRow> _rowsForSeries(
-    String seriesId,
-    List<ChildPaymentStatusRow> allRows,
-    Map<String, String> cycleToSeries,
-  ) {
-    return allRows.where((r) {
-      final sid = cycleToSeries[r.cycleId ?? ''];
-      return sid == seriesId;
-    }).toList();
   }
 }
 
@@ -192,23 +137,84 @@ class _SeriesPaymentSection extends ConsumerWidget {
     required this.childId,
     required this.seriesId,
     required this.seriesTitle,
-    required this.paymentRows,
-    required this.currentRows,
-    required this.cycles,
+    required this.seriesAttendance,
+    required this.seriesCycles,
   });
 
   final String childId;
   final String seriesId;
   final String seriesTitle;
-  final List<ChildPaymentStatusRow> paymentRows;
-  final List<ChildCurrentStatusRow> currentRows;
-  final List<ChildPaymentCycle> cycles;
+  final List<ChildCurrentStatusRow> seriesAttendance;
+  final List<ChildPaymentCycle> seriesCycles;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final groups = _buildGroups(paymentRows, cycles);
 
+    // ── Latest completed cycle boundary for this series
+    //   (paid_advance is a pre-payment; not part of the chronological chain)
+    DateTime? latestCycleEnd;
+    for (final c in seriesCycles) {
+      if (c.status == 'paid_advance') continue;
+      final pe = c.periodEnd;
+      if (pe == null) continue;
+      if (latestCycleEnd == null || pe.isAfter(latestCycleEnd)) {
+        latestCycleEnd = pe;
+      }
+    }
+
+    // ── Build per-cycle attendance groups by CHRONOLOGY.
+    //   For each non-advance cycle, take every attendance row in this
+    //   series whose workshop_date is within [period_start, period_end].
+    //   This picks up intermediate absences that carry payment_cycle_id
+    //   = NULL — the whole point of this fix.
+    final groups = <CycleGroup>[];
+    for (final c in seriesCycles) {
+      if (c.status == 'paid_advance') continue;
+      final ps = c.periodStart;
+      final pe = c.periodEnd;
+      final cycleRows = <ChildPaymentStatusRow>[];
+      if (ps != null && pe != null) {
+        for (final a in seriesAttendance) {
+          final d = a.workshopDate;
+          if (d == null) continue;
+          if (d.isBefore(ps) || d.isAfter(pe)) continue;
+          cycleRows.add(_asPaymentStatusRow(a, c.id, c.status));
+        }
+        cycleRows.sort(
+            (a, b) => a.workshopDate!.compareTo(b.workshopDate!));
+      }
+      groups.add(CycleGroup(
+        cycleId: c.id,
+        cycleStatus: c.status,
+        periodStart: c.periodStart,
+        periodEnd: c.periodEnd,
+        paidAt: c.paidAt,
+        confirmedByName: null,
+        paymentMethod: _resolveMethod(c.paymentMethod, c.notes),
+        sessionsCount: c.sessionsCount,
+        rows: cycleRows,
+      ));
+    }
+
+    // ── Current block: rows strictly AFTER the latest cycle boundary
+    //   AND not linked to any cycle. Rows before that boundary but
+    //   unlinked are ABSENCES that historically belong inside a closed
+    //   cycle — displayed via the cycle group above, not here.
+    final currentRows = <ChildCurrentStatusRow>[];
+    for (final r in seriesAttendance) {
+      if (r.paymentCycleId != null) continue;
+      if (latestCycleEnd != null &&
+          r.workshopDate != null &&
+          !r.workshopDate!.isAfter(latestCycleEnd)) {
+        continue;
+      }
+      currentRows.add(r);
+    }
+    currentRows.sort((a, b) => (a.workshopDate ?? DateTime(0))
+        .compareTo(b.workshopDate ?? DateTime(0)));
+
+    // Cycle numbering (chronological by period_start).
     final sortedAsc = [...groups]
       ..sort((a, b) => (a.periodStart ?? DateTime(0))
           .compareTo(b.periodStart ?? DateTime(0)));
@@ -225,10 +231,10 @@ class _SeriesPaymentSection extends ConsumerWidget {
         groups.where((g) => g.cycleStatus == 'paid').toList();
 
     final isAlreadyConfirmed =
-        cycles.any((c) => c.status == 'paid_advance') ||
+        seriesCycles.any((c) => c.status == 'paid_advance') ||
             groups.any((g) => g.cycleStatus == 'paid_advance');
     final advanceCycle =
-        cycles.where((c) => c.status == 'paid_advance').firstOrNull;
+        seriesCycles.where((c) => c.status == 'paid_advance').firstOrNull;
     final confirmedPaymentMethod = advanceCycle != null
         ? _resolveMethod(advanceCycle.paymentMethod, advanceCycle.notes)
         : null;
@@ -241,7 +247,6 @@ class _SeriesPaymentSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Series title header
         Text(
           seriesTitle,
           style: theme.textTheme.labelLarge?.copyWith(
@@ -270,7 +275,7 @@ class _SeriesPaymentSection extends ConsumerWidget {
 
         if (!showActiveCycle && groups.isEmpty)
           Text(
-            cycles.isEmpty
+            seriesCycles.isEmpty
                 ? 'Nu există cicluri de plată înregistrate.'
                 : 'Nu există încă un status de plată.',
             style: theme.textTheme.bodySmall
@@ -327,63 +332,27 @@ class _SeriesPaymentSection extends ConsumerWidget {
     );
   }
 
-  List<CycleGroup> _buildGroups(
-    List<ChildPaymentStatusRow> rows,
-    List<ChildPaymentCycle> cyclesForSeries,
+  /// Adapts a `ChildCurrentStatusRow` (rich attendance model) into a
+  /// `ChildPaymentStatusRow` (what `PaymentCycleCard` expects). Only the
+  /// display fields are copied; `paidAt` / `confirmedByName` stay null
+  /// since the card sources those from the cycle row instead.
+  static ChildPaymentStatusRow _asPaymentStatusRow(
+    ChildCurrentStatusRow src,
+    String cycleId,
+    String? cycleStatus,
   ) {
-    final Map<String, List<ChildPaymentStatusRow>> map = {};
-    final Map<String, ChildPaymentStatusRow> meta = {};
-
-    for (final row in rows) {
-      final id = row.cycleId ?? '';
-      if (id.isEmpty) continue;
-      map.putIfAbsent(id, () => []).add(row);
-      meta.putIfAbsent(id, () => row);
-    }
-
-    final cycleData = {for (final c in cyclesForSeries) c.id: c};
-
-    final groups = map.entries.map((e) {
-      final m = meta[e.key]!;
-      final sorted = (e.value
-            ..sort((a, b) => (a.workshopDate ?? DateTime(0))
-                .compareTo(b.workshopDate ?? DateTime(0))))
-          .where((r) => r.workshopDate != null)
-          .toList();
-      final cycle = cycleData[e.key];
-      return CycleGroup(
-        cycleId: e.key,
-        cycleStatus: cycle?.status ?? m.cycleStatus,
-        periodStart: cycle?.periodStart ?? m.periodStart,
-        periodEnd: cycle?.periodEnd ?? m.periodEnd,
-        paidAt: cycle?.paidAt ?? m.paidAt,
-        confirmedByName: m.confirmedByName,
-        paymentMethod: _resolveMethod(cycle?.paymentMethod, cycle?.notes),
-        sessionsCount: cycle?.sessionsCount,
-        rows: sorted,
-      );
-    }).toList();
-
-    // Defensive: include due/overdue cycles even when the view returned
-    // no rows for them (trigger race, freshly closed).
-    final represented = map.keys.toSet();
-    for (final cycle in cyclesForSeries) {
-      if (cycle.id.isEmpty) continue;
-      if (represented.contains(cycle.id)) continue;
-      if (cycle.status != 'due' && cycle.status != 'overdue') continue;
-      groups.add(CycleGroup(
-        cycleId: cycle.id,
-        cycleStatus: cycle.status,
-        periodStart: cycle.periodStart,
-        periodEnd: cycle.periodEnd,
-        paidAt: cycle.paidAt,
-        confirmedByName: null,
-        paymentMethod: _resolveMethod(cycle.paymentMethod, cycle.notes),
-        sessionsCount: cycle.sessionsCount,
-        rows: const [],
-      ));
-    }
-    return groups;
+    return ChildPaymentStatusRow(
+      childId: src.childId,
+      cycleId: cycleId,
+      workshopTitle: src.workshopTitle,
+      workshopDate: src.workshopDate,
+      dayOfWeek: src.dayOfWeek,
+      startTime: src.startTime,
+      endTime: src.endTime,
+      attendanceStatus: src.attendanceStatus,
+      observation: src.observation,
+      cycleStatus: cycleStatus,
+    );
   }
 
   static String? _resolveMethod(String? paymentMethod, String? notes) {

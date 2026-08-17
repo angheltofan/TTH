@@ -4,15 +4,24 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/error_state.dart';
 import '../../domain/child_current_status_row.dart';
+import '../../domain/child_payment_cycle.dart';
 import '../../providers/child_details_providers.dart';
 import 'attendance_row_item.dart';
 import 'details_section_card.dart';
 
 /// Shows the child's current-cycle progress **per workshop series**.
 ///
-/// Since migration 20260820, payment cycles are scoped per (child, series).
-/// The row list is grouped by `seriesId`; each group renders its own
-/// progress header + attendance table.
+/// Since 2026-08-21 the row classification is chronological, not based on
+/// `attendance.payment_cycle_id`. That column is a financial linkage
+/// (populated only on PRESENT rows that formed a closed 4-session cycle);
+/// ABSENT rows always carry NULL there, so filtering by NULL alone leaked
+/// intermediate absences into the current section. The correct rule is:
+///
+///   • for each series, find the latest cycle's `period_end`
+///   • the current block contains rows whose `workshop_date` is strictly
+///     AFTER that boundary
+///   • progress counts only PRESENT rows (absences are shown but don't
+///     increment the numerator)
 class CurrentStatusCard extends ConsumerWidget {
   const CurrentStatusCard({super.key, required this.childId});
   final String childId;
@@ -21,16 +30,18 @@ class CurrentStatusCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final rowsAsync = ref.watch(childCurrentStatusRowsProvider(childId));
+    final cyclesAsync = ref.watch(childPaymentCyclesNewProvider(childId));
 
     Widget content;
 
-    if (rowsAsync.isLoading) {
+    if (rowsAsync.isLoading || cyclesAsync.isLoading) {
       content = const _InlineLoader();
     } else if (rowsAsync.hasError) {
       content = AppError(message: rowsAsync.error.toString());
     } else {
-      final rows = rowsAsync.valueOrNull ?? [];
-      final grouped = _groupBySeries(rows);
+      final allRows = rowsAsync.valueOrNull ?? const [];
+      final cycles = cyclesAsync.valueOrNull ?? const [];
+      final grouped = _classifyCurrentPerSeries(allRows, cycles);
       if (grouped.isEmpty) {
         content = Text(
           'Nu există încă prezențe în statusul actual.',
@@ -61,12 +72,45 @@ class CurrentStatusCard extends ConsumerWidget {
     );
   }
 
-  List<_SeriesGroup> _groupBySeries(List<ChildCurrentStatusRow> rows) {
-    // Preserve encounter order so the sections show up in the same
-    // sequence they would visually (title-driven).
+  /// For each workshop series the child has attendance in:
+  ///   - Find the latest completed cycle's `period_end` for that series.
+  ///   - Return only rows dated STRICTLY AFTER that boundary.
+  ///   - If the series has no completed cycles, return all rows.
+  /// Rows already linked to any cycle (`paymentCycleId != null`) are
+  /// excluded — those PRESENT rows belong to their financial cycle.
+  List<_SeriesGroup> _classifyCurrentPerSeries(
+    List<ChildCurrentStatusRow> rows,
+    List<ChildPaymentCycle> cycles,
+  ) {
+    // Latest period_end per series (only counting completed cycles that
+    // participate in the chronological chain, not paid_advance).
+    final latestEndPerSeries = <String, DateTime>{};
+    for (final c in cycles) {
+      final sid = c.seriesId;
+      final pe = c.periodEnd;
+      if (sid == null || pe == null) continue;
+      if (c.status == 'paid_advance') continue;
+      final existing = latestEndPerSeries[sid];
+      if (existing == null || pe.isAfter(existing)) {
+        latestEndPerSeries[sid] = pe;
+      }
+    }
+
     final byKey = <String, _SeriesGroup>{};
     for (final r in rows) {
       final key = r.seriesId ?? '__no_series__';
+      // A row belongs to the current block when its date is strictly
+      // after the latest completed cycle boundary for its series AND it
+      // is not linked to any financial cycle (PRESENT rows in a closed
+      // cycle carry paymentCycleId — never surface them as "current").
+      if (r.paymentCycleId != null) continue;
+      final latestEnd =
+          r.seriesId != null ? latestEndPerSeries[r.seriesId!] : null;
+      if (latestEnd != null &&
+          r.workshopDate != null &&
+          !r.workshopDate!.isAfter(latestEnd)) {
+        continue;
+      }
       byKey.putIfAbsent(
         key,
         () => _SeriesGroup(
@@ -78,7 +122,6 @@ class CurrentStatusCard extends ConsumerWidget {
       byKey[key]!.rows.add(r);
     }
     final list = byKey.values.toList();
-    // Stable alphabetic ordering by title (nullable last).
     list.sort((a, b) {
       final at = a.seriesTitle ?? '~';
       final bt = b.seriesTitle ?? '~';

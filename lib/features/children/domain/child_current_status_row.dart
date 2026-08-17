@@ -13,6 +13,7 @@ class ChildCurrentStatusRow {
     this.observation,
     this.seriesId,
     this.seriesTitle,
+    this.paymentCycleId,
   });
 
   final String childId;
@@ -32,6 +33,12 @@ class ChildCurrentStatusRow {
   final String? seriesId;
   /// Human-readable series title (from workshop_series.title).
   final String? seriesTitle;
+
+  /// Financial linkage to a payment cycle. Set for PRESENT rows that are
+  /// part of a closed 4-session cycle. Always NULL for ABSENT rows —
+  /// which is why absences must be classified by workshop_date, not by
+  /// this field.
+  final String? paymentCycleId;
 
   factory ChildCurrentStatusRow.fromMap(Map<String, dynamic> map) =>
       ChildCurrentStatusRow(
