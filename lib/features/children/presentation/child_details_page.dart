@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -11,10 +11,9 @@ import '../../workshops/providers/enrollment_providers.dart';
 import '../providers/child_details_providers.dart';
 import 'child_attendance_calendar_page.dart';
 import 'widgets/assigned_workshops_card.dart';
+import 'widgets/attendance_payments/attendance_payments_section.dart';
 import 'widgets/child_info_card.dart';
-import 'widgets/current_status_card.dart';
 import 'widgets/generate_child_report_button.dart';
-import 'widgets/payment_status_card.dart';
 
 class ChildDetailsPage extends ConsumerStatefulWidget {
   const ChildDetailsPage({super.key, required this.childId});
@@ -25,13 +24,6 @@ class ChildDetailsPage extends ConsumerStatefulWidget {
 }
 
 class _ChildDetailsPageState extends ConsumerState<ChildDetailsPage> {
-  // Realtime is handled centrally by appRealtimeProvider, which subscribes
-  // to `attendance` and `payment_cycles` and invalidates the same child
-  // providers when the payload contains this child's id. The autoDispose
-  // family providers below mount fresh on first watch, so there's no need
-  // for a postFrameCallback invalidate-storm — that pattern was forcing a
-  // second fetch immediately after the first autoDispose mount.
-
   @override
   Widget build(BuildContext context) {
     final childAsync = ref.watch(childByIdProvider(widget.childId));
@@ -87,34 +79,21 @@ class _ChildDetailsPageState extends ConsumerState<ChildDetailsPage> {
                 ),
                 SizedBox(height: context.sectionGap),
 
-                // 2. Atelierul la care vine
+                // 2. Atelierele la care vine (enrollment management)
                 AssignedWorkshopsCard(childId: widget.childId),
                 SizedBox(height: context.sectionGap),
 
-                // 3. Status actual — identical card for both paths.
-                //
-                // For paid children the row source is `attendance` rows
-                // with `payment_cycle_id IS NULL`, which the server
-                // resets to NULL by linking them when a new cycle is
-                // created. For free children no cycle is ever created
-                // (DB trigger skips the INSERT), so the provider
-                // windows the same query to the trailing "current
-                // block" past the last 4th-present row — giving the
-                // same X / 4 → reset to 0 / 4 behavior without any
-                // financial side effect.
-                CurrentStatusCard(childId: widget.childId),
+                // 3. Prezențe și plăți — replaces the former "Status
+                //    actual" + "Status plată" cards. Series-aware,
+                //    tabbed (current vs history), with chronological
+                //    timelines, an alert banner, and a summary strip.
+                //    Rendered for both paid and free children: for free
+                //    kids the summary/alert/history are trivially empty
+                //    (no cycles exist server-side) and the current tab
+                //    renders their pre-windowed attendance progression.
+                AttendancePaymentsSection(childId: widget.childId),
 
-                // 4. Status plată — paid participants only. Free
-                // participants never have payment cycles, so the whole
-                // payment card (and the cicluri / istoric / confirma
-                // plata controls inside it) are skipped.
-                if (!child.isFreeParticipant) ...[
-                  SizedBox(height: context.sectionGap),
-                  PaymentStatusCard(childId: widget.childId),
-                ],
-
-                // 5. Părinți asociați — admin-only in P4. Trainer read-only
-                // access pending an RLS extension on child_parents/profiles.
+                // 4. Părinți asociați — admin-only.
                 if (isAdmin) ...[
                   SizedBox(height: context.sectionGap),
                   LinkedParentsCard(childId: widget.childId),
