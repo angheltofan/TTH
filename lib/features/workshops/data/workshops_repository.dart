@@ -257,6 +257,11 @@ class WorkshopsRepository {
         'trainer_id': payload['trainer_id'],
         'notes': payload['notes'],
         'is_active': payload['is_active'] ?? true,
+        // Persist the first-occurrence date so ensure_series_backfilled
+        // can materialise every subsequent weekly session on demand.
+        // Only set on genuinely new series (this branch runs only when
+        // the form generated a fresh series_id).
+        'start_date': payload['workshop_date'],
       });
     }
 

@@ -89,6 +89,25 @@ class _ChildAttendanceCalendarModalState
     _tabs = TabController(length: 2, vsync: this);
     final now = DateTime.now();
     _month = DateTime(now.year, now.month, 1);
+    // Ensure every recurring series the child is enrolled in has all its
+    // historical weekly sessions materialised. Idempotent — no-op when
+    // everything is already in place. Runs once per modal open.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _runBackfill());
+  }
+
+  Future<void> _runBackfill() async {
+    try {
+      final inserted = await ref
+          .read(attendanceCalendarRepositoryProvider)
+          .ensureBackfilled(widget.childId);
+      if (inserted > 0 && mounted) {
+        // New scheduled_workshops rows now exist — refresh so they appear
+        // in the calendar / missing list immediately.
+        _invalidateAllProvidersForThisChild();
+      }
+    } catch (_) {
+      // Non-fatal: the calendar still works with existing sessions.
+    }
   }
 
   @override

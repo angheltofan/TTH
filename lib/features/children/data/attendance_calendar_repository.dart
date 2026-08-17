@@ -145,6 +145,29 @@ class AttendanceCalendarRepository {
     return out;
   }
 
+  /// Ensures every recurring series the child is currently enrolled in
+  /// has all its weekly `scheduled_workshops` rows materialised from
+  /// `workshop_series.start_date` to today. Called by the calendar
+  /// modal once per open so historical dates the legacy generator never
+  /// filled become selectable.
+  ///
+  /// Delegates to the `ensure_child_series_backfilled` RPC — idempotent,
+  /// cheap (skips existing rows). Returns the total number of new
+  /// `scheduled_workshops` rows inserted (usually 0).
+  Future<int> ensureBackfilled(String childId) async {
+    final res = await _client
+        .rpc('ensure_child_series_backfilled', params: {
+      'p_child_id': childId,
+    });
+    if (res is Map && res['total_inserted'] is int) {
+      return res['total_inserted'] as int;
+    }
+    if (res is Map && res['total_inserted'] is num) {
+      return (res['total_inserted'] as num).toInt();
+    }
+    return 0;
+  }
+
   /// Sets attendance for `(childId, scheduledWorkshopId)`, creating a new
   /// row on first touch or updating the existing one otherwise.
   ///
