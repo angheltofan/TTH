@@ -89,7 +89,7 @@ Catalog de domenii acoperite de tool-uri:
 - Trainer ↔ copii: get_children_by_trainer, get_trainer_children_summary, get_trainers_with_payment_risk
 - Progres copii: get_progress_summary, get_recent_progress_notes, get_children_by_progress_status, get_child_progress_details
 - Materiale lecții: get_materials_summary, get_materials_by_workshop_type, get_recent_materials, get_workshops_without_materials
-- Plăți (avansate): get_payment_amount_summary, get_recent_confirmed_payments, get_children_near_payment_cycle
+- Plăți (avansate): get_recent_confirmed_payments, get_children_near_payment_cycle
 - Calitate ateliere: get_attendance_by_workshop_rankings, get_workshop_name_quality_issues
 - Prezență: get_attendance_summary, get_attendance_by_date, get_attendance_by_workshop, get_attendance_by_trainer, get_top_children_attendance, get_children_with_consecutive_absences, get_motivated_absences, compare_attendance_periods, get_workshop_attendance_analysis
 - Ateliere: get_workshops (today/this_week/next_week/custom), get_workshops_by_type, get_workshops_by_trainer, get_active_workshop_series, get_workshop_children, get_most_popular_workshops, get_workshops_without_children, get_workshops_without_trainer, get_workshop_capacity_summary
@@ -127,7 +127,7 @@ Overview schemă public (folosește când construiești query-uri):
   • **scheduled_workshops**: id, series_id, recurring_series_id (legacy), title, workshop_type, day_of_week, workshop_date, start_time, end_time, trainer_id, notes, is_active, is_recurring, archived_at, archived_by, archived_reason, created_at
   • **workshop_enrollments**: id, child_id, series_id, is_active, created_at
   • **attendance**: id, scheduled_workshop_id, child_id, status ('present' | 'absent' | 'motivated'), observation, marked_at, marked_by, payment_cycle_id, is_archived
-  • **payment_cycles**: id, child_id, period_start, period_end, sessions_count, status ('due' | 'overdue' | 'paid' | 'paid_advance' | 'cancelled'), payment_method ('pos' | 'op' | null), amount, currency, paid_at, confirmed_by, notes, created_at
+  • **payment_cycles**: id, child_id, period_start, period_end, sessions_count, status ('due' | 'overdue' | 'paid' | 'paid_advance' | 'cancelled'), payment_method ('pos' | 'op' | null), paid_at, confirmed_by, notes, created_at. NOTĂ: coloanele amount și currency EXISTĂ în schemă dar sunt NULL în TOATE rândurile — NU le folosi și NU raporta cifre monetare. Sumele nu sunt urmărite în aplicație.
   • **notifications**: id, recipient_id, type, title, body, is_read, priority, related_child_id, related_workshop_id, action_url, created_at
   • **demo_workshops**: id, child_first_name, child_last_name, parent_name, parent_phone, parent_email, workshop_type, workshop_title, demo_date, start_time, end_time, trainer_id, status, notes, created_by, created_at
   • **team_chat_messages**: id, sender_id, body, is_deleted, attachment_url, attachment_name, attachment_size, attachment_kind ('image' | 'file'), created_at
@@ -208,11 +208,20 @@ Exemple de mapare promptă → tool:
 - "Materiale pentru robotică" → get_materials_by_workshop_type
 - "Materiale încărcate în ultimele 30 de zile" → get_recent_materials
 - "Ce ateliere nu au materiale" → get_workshops_without_materials
-- "Suma totală încasată" / "suma restantă" → get_payment_amount_summary (cu nota privind sumele lipsă)
+- "Suma totală încasată" / "suma restantă" → NU RĂSPUNDE cu cifre monetare. Aplicația nu stochează sume per ciclu. Spune direct utilizatorului: "Aplicația nu stochează valori monetare per ciclu de plată. Pot spune doar câte cicluri sunt încasate / restante." apoi folosește get_financial_summary pentru NUMĂR de cicluri.
 - "Plăți confirmate în ultimele 30 de zile" → get_recent_confirmed_payments
 - "Cine e aproape de următorul ciclu de plată" → get_children_near_payment_cycle
 
-Plăți pe METODĂ — SINGURUL tool disponibil: \`get_payments_by_method\`. Îl folosești pentru ORICE întrebare despre plăți per metodă, indiferent de formulare (nume, agregat, distribuție, count). Nu există alt tool concurent. Câmpurile din răspunsul lui acoperă atât detalii individuale (pe_metoda.<METODĂ>.plati[] cu nume + sume + confirmatori) cât și agregate (pe_metoda.<METODĂ>.total, total_plati, total_suma). Pentru „distribuția pe metode luna aceasta" apelezi tot \`get_payments_by_method\` cu \`methods=["pos","op","unknown"]\` + fereastra dorită, apoi citești numerele din \`pe_metoda.*.total\`.
+Plăți pe METODĂ — SINGURUL tool disponibil: \`get_payments_by_method\`. Îl folosești pentru ORICE întrebare despre plăți per metodă, indiferent de formulare (nume, distribuție, count). Nu există alt tool concurent. Câmpurile din răspunsul lui acoperă atât detalii individuale (pe_metoda.<METODĂ>.plati[] cu nume + confirmatori) cât și agregate (pe_metoda.<METODĂ>.total, total_plati). Pentru „distribuția pe metode luna aceasta" apelezi tot \`get_payments_by_method\` cu \`methods=["pos","op","unknown"]\` + fereastra dorită, apoi citești numerele din \`pe_metoda.*.total\`.
+
+REGULĂ ABSOLUTĂ — SUME MONETARE (FĂRĂ EXCEPȚIE):
+Aplicația NU stochează sume monetare (RON, lei, EUR) per ciclu de plată. Coloana payment_cycles.amount este NULL în toate rândurile. NU MENȚIONA sume sau prețuri niciodată în răspunsuri despre plăți POS/OP:
+- INTERZIS: "300 RON", "350 lei", "Total: 700 RON încasat", "suma încasată", "valoare per ciclu"
+- INTERZIS chiar și dacă utilizatorul întreabă direct despre sume — răspunzi: "Aplicația nu stochează valori monetare per ciclu. Pot spune doar cine a plătit, când și prin ce metodă."
+- Pentru orice întrebare de tip „cât s-a încasat / cât e restant / suma totală / cât a plătit X" → răspunzi cu propoziția de mai sus și ofertă alternativa (număr de cicluri via get_financial_summary, listă de plăți via get_payments_by_method).
+- NU FABRICA valori inventate ca „300 RON", chiar dacă răspunsul pare mai complet cu ele. Dacă tool-ul nu returnează un câmp \`suma\`, nu adăuga tu unul.
+
+Ce POȚI menționa despre plăți POS/OP: copil, părinte, metodă (POS/OP), data confirmării (paid_at), cine a confirmat, statusul ("Plată confirmată" sau "Achitat în avans"), perioada ciclului, număr de ședințe. Atât.
 
 DEZAMBIGUARE lună calendaristică (rezolvă „luna X" ÎNAINTE să chemi tool-ul):
 - „luna ianuarie" / „ianuarie" → month=1
@@ -244,7 +253,7 @@ Routing rules (fii strict):
 - "cine a plătit prin transfer", "prin transfer bancar", "bank transfer", "ordin de plată" → methods=["op"]
 - "arată-mi toate plățile POS și OP din iunie", "grupează plățile după metodă", "POS și OP" → methods=["pos", "op"] + year+month dacă se specifică luna
 - "toate plățile confirmate din luna X" (fără a specifica metoda) → methods=["pos", "op", "unknown"] + year+month
-- "Pentru fiecare plată POS sau OP, spune-mi copilul, suma, data și cine a confirmat-o" → methods=["pos", "op"] — răspunde cu detalii per plată, NU cu un simplu total.
+- "Pentru fiecare plată POS sau OP, spune-mi copilul, data și cine a confirmat-o" → methods=["pos", "op"] — răspunde cu detalii per plată, NU cu un simplu total. NU menționa sume (nu sunt stocate).
 - "Câte plăți POS sunt confirmate luna aceasta?" → methods=["pos"] cu year+month = luna curentă (folosește "total_plati" din răspuns pentru numărare)
 - "Plăți confirmate fără metodă înregistrată" → methods=["unknown"]
 - "Distribuția plăților pe metode" → tot get_payments_by_method (methods=["pos","op","unknown"]), apoi citește pe_metoda.*.total din răspuns. NU există alt tool separat pentru distribuție.
@@ -258,18 +267,18 @@ Cum raportezi rezultatele din get_payments_by_method:
 - Menționează fereastra (câmpul "fereastra" din răspuns).
 - GRUPEAZĂ plățile pe metodă folosind câmpul "pe_metoda" din răspuns. Pentru fiecare grup afișează:
     POS:
-    1. <copil> — <suma> RON — <confirmed_at (format DD.MM.YYYY)> — confirmată de <confirmat_de>.
+    1. <copil> — <confirmed_at (format DD.MM.YYYY)> — confirmată de <confirmat_de>.
     2. …
     OP:
     1. …
-- REGULĂ ABSOLUTĂ (nu-i sări niciodată): dacă tool-ul returnează plăți în "pe_metoda.<METODĂ>.plati", TREBUIE să listezi fiecare plată individual cu câmpul "copil" din acel row. NU răspunde cu doar totalul. NU spune că "numele nu sunt disponibile" — câmpul "copil" există pe FIECARE row returnat de tool. Dacă nu îl vezi, îl scoți din payload-ul care ți s-a livrat, nu din memorie.
-- Fiecare plată din "pe_metoda.<METODĂ>.plati" TREBUIE afișată cu: numele copilului ("copil"), suma ("suma" + "moneda" — folosește "RON" ca fallback dacă moneda e null), data confirmării ("confirmed_at", format DD.MM.YYYY), și cine a confirmat ("confirmat_de"). Dacă "confirmed_at" e null, folosește "created_at" în loc și scrie "înregistrat la" în loc de "confirmat la".
+- REGULĂ ABSOLUTĂ (nu-i sări niciodată): dacă tool-ul returnează plăți în "pe_metoda.<METODĂ>.plati", TREBUIE să listezi fiecare plată individual cu câmpul "copil" din acel row. NU răspunde cu doar totalul. NU spune că "numele nu sunt disponibile" — câmpul "copil" există pe FIECARE row returnat de tool.
+- Fiecare plată din "pe_metoda.<METODĂ>.plati" TREBUIE afișată cu: numele copilului ("copil"), data confirmării ("confirmed_at", format DD.MM.YYYY), și cine a confirmat ("confirmat_de"). Dacă "confirmed_at" e null, folosește "created_at" în loc și scrie "înregistrat la" în loc de "confirmat la". NU MENȚIONA SUME MONETARE — nu sunt disponibile în răspuns și e INTERZIS să inventezi.
 - Câmpuri opționale de menționat când sunt cerute explicit sau când completează contextul: numele părintelui ("parinte"), status ("Plată confirmată" pentru "paid" sau "Achitat în avans" pentru "paid_advance"), perioada ciclului ("perioada"), ședințe ("sedinte").
 - Dacă un câmp opțional e null (ex: părinte lipsă), scrie "nu este înregistrat", NU spune că datele nu pot fi obținute.
-- Fallback pentru copii nerezolvați: dacă "copil" începe cu "child_id: … (nume nerezolvat)", listează totuși plata cu acel string ca identificator. Nu o omite. Asta arată clar că datele sunt în DB dar RLS-ul (sau un rând ștears) ascunde numele.
-- Dacă răspunsul are "total_suma" prezent (nenull), adaugă un sumar la final: "Total: X RON încasat prin <metode> în perioada Y".
+- Fallback pentru copii nerezolvați: dacă "copil" începe cu "child_id: … (nume nerezolvat)", listează totuși plata cu acel string ca identificator. Nu o omite.
+- La final, poți adăuga un sumar cu NUMĂRUL de plăți: "Total: 4 plăți confirmate prin POS și OP în perioada Y" (folosește câmpul "total_plati"). NU adăuga sume monetare.
 - Dacă un grup are 0 plăți, spune-o explicit: "POS: nicio plată în această perioadă" — NU omite grupul.
-- Dacă răspunsul are câmpul "nota" nenull, transcrie-l în răspuns și NU inventa sume.
+- Dacă răspunsul are câmpul "nota" nenull, transcrie-l în răspuns și NU inventa cifre.
 - Ignoră blocul "debug" din răspuns — e pentru diagnostic, nu pentru utilizator.
 - "Cele mai bune/slabe ateliere" → get_attendance_by_workshop_rankings (sample-size ≥ 3 implicit)
 - "Probleme cu denumirile atelierelor" → get_workshop_name_quality_issues
@@ -1318,22 +1327,14 @@ const TOOLS: ToolDef[] = [
   },
 
   // ── Payment intelligence ──────────────────────────────────────────────────
-  {
-    name: "get_payment_amount_summary",
-    description:
-      "Sumar de valori monetare pe payment_cycles. Calculează DOAR din rândurile " +
-      "care au coloana amount nenulă. Returnează separat total încasat, total restant, " +
-      "câte cicluri nu au sumă, și o notă explicită când lipsesc sume. " +
-      "Niciodată nu inventează prețuri.",
-    parameters: {
-      type: "object",
-      properties: {
-        year: { type: "integer", description: "An (opțional)." },
-        month: { type: "integer", minimum: 1, maximum: 12, description: "Lună (opțional)." },
-      },
-      additionalProperties: false,
-    },
-  },
+  //
+  // Note (2026-08-14): get_payment_amount_summary was removed. The
+  // aplication does not store per-cycle amounts (every payment_cycles
+  // row has amount IS NULL), and exposing a tool that talks about
+  // "totals" invited the model to fabricate values. The composite
+  // tools that used to include amount data (weekly action plan,
+  // admin priority list) still call it via a stub that returns a
+  // "sums-not-tracked" note so callers don't break.
   {
     name: "get_recent_confirmed_payments",
     description:
@@ -4285,20 +4286,16 @@ async function toolGetPaymentsByMethod(
   // No `children!inner(...)` embed. Free-participant filtering is
   // deferred to the in-memory merge step so the query is not gated on
   // PostgREST's FK auto-detection.
-  let amountAvailable = true;
-  const probe = await admin.from("payment_cycles").select("amount").limit(1);
-  if (probe.error) {
-    const code = (probe.error as { code?: string }).code;
-    if (code === "42703" || (probe.error.message ?? "").includes("amount")) {
-      amountAvailable = false;
-    }
-  }
-  const selectCols = amountAvailable
-    ? "id, child_id, status, payment_method, paid_at, created_at, " +
-      "confirmed_by, amount, currency, period_start, period_end, " +
-      "sessions_count, notes"
-    : "id, child_id, status, payment_method, paid_at, created_at, " +
-      "confirmed_by, period_start, period_end, sessions_count, notes";
+  //
+  // Note (2026-08-14): amount + currency columns are NOT selected here.
+  // The application does not store per-cycle amounts (every row has
+  // amount IS NULL) and exposing them to the model led to hallucinated
+  // sums ("300 RON") in production. The operator asked to strip every
+  // monetary field from POS/OP responses. Reports are done outside the
+  // app.
+  const selectCols =
+    "id, child_id, status, payment_method, paid_at, created_at, " +
+    "confirmed_by, period_start, period_end, sessions_count, notes";
 
   const perMethodQueries = methods.map((m) => {
     let q = admin
@@ -4390,15 +4387,16 @@ async function toolGetPaymentsByMethod(
   }
 
   // ── Merge + flatten ──────────────────────────────────────────────
+  //
+  // Deliberately does NOT include suma / moneda. Amounts are absent
+  // from the schema in practice (every payment_cycles row has amount
+  // IS NULL) and exposing them tempted the model to hallucinate
+  // values like "300 RON". Reports needing monetary figures are done
+  // outside the app.
   const mapRow = (r: PaymentCycleRow) => {
-    const amount = amountAvailable && typeof r.amount === "number"
-      ? r.amount
-      : null;
     const child = childMap.get(r.child_id) ?? null;
     // Fallback name string ensures every row has a non-null `copil`
-    // anchor even when RLS or a missing row hides the child. This makes
-    // debug in production straightforward — the model can quote the
-    // child_id back at the user.
+    // anchor even when RLS or a missing row hides the child.
     const copil = child
       ? fullName(child.first_name, child.last_name)
       : `child_id: ${r.child_id} (nume nerezolvat)`;
@@ -4415,8 +4413,6 @@ async function toolGetPaymentsByMethod(
       parinte: child?.parent_name ?? null,
       status: r.status,
       metoda: (r.payment_method ?? "").toUpperCase() || null,
-      suma: amount,
-      moneda: amount !== null ? (r.currency ?? "RON") : null,
       confirmed_at: r.paid_at?.slice(0, 10) ?? null,
       created_at: r.created_at?.slice(0, 10) ?? null,
       confirmed_by: r.confirmed_by,
@@ -4432,13 +4428,10 @@ async function toolGetPaymentsByMethod(
   // ── Grouped assembly ──────────────────────────────────────────────
   const groups: Record<string, {
     total: number;
-    suma_totala: number | null;
     plati: ReturnType<typeof mapRow>[];
   }> = {};
   let anyErr: string | null = null;
   let grandTotal = 0;
-  let grandAmount = 0;
-  let anyAmountSeen = false;
   let cyclesFetched = 0;
   let droppedFree = 0;
   for (let i = 0; i < methods.length; i++) {
@@ -4447,14 +4440,11 @@ async function toolGetPaymentsByMethod(
     const key = method === "unknown" ? "NECUNOSCUT" : method.toUpperCase();
     if (res.error) {
       anyErr = res.error.message;
-      groups[key] = { total: 0, suma_totala: null, plati: [] };
+      groups[key] = { total: 0, plati: [] };
       continue;
     }
     const rows = (res.data ?? []) as PaymentCycleRow[];
     cyclesFetched += rows.length;
-    // Drop free-participant rows in memory (was previously done via
-    // `.eq("children.payment_type", "paid")` inside the join — but the
-    // join is gone).
     const filtered = rows.filter((r) => {
       const child = childMap.get(r.child_id);
       if (child && child.payment_type === "free") {
@@ -4464,21 +4454,9 @@ async function toolGetPaymentsByMethod(
       return true;
     });
     const plati = filtered.map(mapRow);
-    let sumaTotala: number | null = null;
-    if (amountAvailable) {
-      sumaTotala = 0;
-      for (const p of plati) {
-        if (p.suma !== null) {
-          sumaTotala += p.suma;
-          grandAmount += p.suma;
-          anyAmountSeen = true;
-        }
-      }
-    }
     grandTotal += plati.length;
     groups[key] = {
       total: plati.length,
-      suma_totala: sumaTotala,
       plati,
     };
   }
@@ -4490,8 +4468,6 @@ async function toolGetPaymentsByMethod(
     fereastra: windowLabel,
     limit_per_metoda: limitPerMethod,
     total_plati: grandTotal,
-    total_suma: amountAvailable && anyAmountSeen ? grandAmount : null,
-    moneda: amountAvailable && anyAmountSeen ? "RON" : null,
     pe_metoda: groups,
     debug: {
       cycles_fetched: cyclesFetched,
@@ -4505,9 +4481,7 @@ async function toolGetPaymentsByMethod(
         (id) => !confirmerNames.has(id),
       ).length,
     },
-    nota: amountAvailable
-      ? (anyErr ? `Interogare parțial eșuată: ${anyErr}` : null)
-      : "Coloana payment_cycles.amount nu există în această schemă — sumele lipsesc.",
+    nota: anyErr ? `Interogare parțial eșuată: ${anyErr}` : null,
   };
 }
 
@@ -6017,98 +5991,24 @@ async function toolGetWorkshopsWithoutMaterials(
 
 // ── Payment intelligence ──────────────────────────────────────────────────
 
-async function toolGetPaymentAmountSummary(
-  admin: SupabaseClient,
-  args: { year?: number; month?: number },
+// Deprecated stub — the tool schema was removed on 2026-08-14 because
+// the app does not store per-cycle amounts. Kept only so that the
+// composite tools (weekly_action_plan, admin_priority_list) that used
+// to call it don't break. Always returns nulls + a fixed note; never
+// hits the DB.
+function toolGetPaymentAmountSummary(
+  _admin: SupabaseClient,
+  _args: { year?: number; month?: number },
 ): Promise<Record<string, unknown>> {
-  // Detect whether payment_cycles has an `amount` column; if not we
-  // cannot compute monetary totals and must say so.
-  let amountColumnExists = true;
-  const probe = await admin
-    .from("payment_cycles")
-    .select("amount, currency, status, paid_at, period_start, period_end, " +
-      "children!inner(payment_type)")
-    .eq("children.payment_type", "paid")
-    .limit(1);
-  if (probe.error) {
-    const code = (probe.error as { code?: string }).code;
-    if (code === "42703" || (probe.error.message ?? "").includes("amount")) {
-      amountColumnExists = false;
-    }
-  }
-  if (!amountColumnExists) {
-    return {
-      nota:
-        "Aplicația nu stochează valori monetare per ciclu (coloana amount lipsește). " +
-        "Pot raporta doar număr de cicluri, nu sume.",
-      suma_incasata: null,
-      suma_restanta: null,
-    };
-  }
-
-  let q = admin
-    .from("payment_cycles")
-    .select(
-      "amount, currency, status, paid_at, period_start, period_end, " +
-        "children!inner(payment_type)",
-    )
-    .eq("children.payment_type", "paid");
-
-  if (args.year && args.month) {
-    const monthStart = `${args.year}-${String(args.month).padStart(2, "0")}-01`;
-    const nextMonth = new Date(args.year, args.month, 1);
-    const monthEnd = ymd(addDays(nextMonth, -1));
-    // Paid in month OR period overlaps month.
-    q = q.or(
-      `and(paid_at.gte.${monthStart},paid_at.lte.${monthEnd}T23:59:59),` +
-        `and(period_start.lte.${monthEnd},period_end.gte.${monthStart})`,
-    );
-  }
-
-  const { data } = await q;
-  const rows = (data ?? []) as Array<{
-    amount: number | null;
-    currency: string | null;
-    status: string | null;
-    paid_at: string | null;
-    period_start: string | null;
-    period_end: string | null;
-  }>;
-  let paidAmount = 0;
-  let pendingAmount = 0;
-  let paidCount = 0;
-  let pendingCount = 0;
-  let amountMissing = 0;
-  const currencies = new Set<string>();
-  for (const r of rows) {
-    if (r.amount == null) {
-      amountMissing += 1;
-      continue;
-    }
-    if (r.currency) currencies.add(r.currency.toUpperCase());
-    if (r.status === "paid" || r.status === "paid_advance") {
-      paidAmount += r.amount;
-      paidCount += 1;
-    } else if (r.status === "due" || r.status === "overdue") {
-      pendingAmount += r.amount;
-      pendingCount += 1;
-    }
-  }
-  return {
-    interval: args.year && args.month
-      ? `${args.year}-${String(args.month).padStart(2, "0")}`
-      : "toate ciclurile",
-    suma_incasata: paidAmount,
-    cicluri_incasate: paidCount,
-    suma_restanta: pendingAmount,
-    cicluri_restante: pendingCount,
-    cicluri_fara_suma: amountMissing,
-    valute: Array.from(currencies),
-    nota: amountMissing > 0
-      ? `Atenție: ${amountMissing} cicluri nu au valoare monetară completată ` +
-        `(amount NULL). Sumele de mai sus sunt parțiale.`
-      : undefined,
-  };
+  return Promise.resolve({
+    nota:
+      "Aplicația nu stochează valori monetare per ciclu de plată. " +
+      "Pentru sume monetare, folosește rapoartele externe.",
+    suma_incasata: null,
+    suma_restanta: null,
+    cicluri_incasate: null,
+    cicluri_restante: null,
+  });
 }
 
 async function toolGetRecentConfirmedPayments(
@@ -6118,7 +6018,11 @@ async function toolGetRecentConfirmedPayments(
   const days = Math.min(Math.max(args.days ?? 30, 1), 365);
   const limit = Math.min(Math.max(args.limit ?? 20, 1), 50);
   const since = ymd(addDays(new Date(), -days));
-  let q = admin
+  // Note (2026-08-14): amount + currency deliberately NOT selected.
+  // Every payment_cycles row has amount IS NULL in production; exposing
+  // the column tempted the model to hallucinate values. Reports with
+  // monetary figures are handled outside the app.
+  const { data } = await admin
     .from("payment_cycles")
     .select(
       "child_id, paid_at, payment_method, status, " +
@@ -6130,39 +6034,11 @@ async function toolGetRecentConfirmedPayments(
     .gte("paid_at", since)
     .order("paid_at", { ascending: false })
     .limit(limit);
-  let amountAvailable = true;
-  const probe = await admin
-    .from("payment_cycles")
-    .select("amount")
-    .limit(1);
-  if (probe.error) {
-    const code = (probe.error as { code?: string }).code;
-    if (code === "42703" || (probe.error.message ?? "").includes("amount")) {
-      amountAvailable = false;
-    }
-  }
-  if (amountAvailable) {
-    q = admin
-      .from("payment_cycles")
-      .select(
-        "child_id, paid_at, payment_method, status, amount, currency, " +
-          "children!inner(first_name, last_name, payment_type), " +
-          "confirmed_by",
-      )
-      .in("status", ["paid", "paid_advance"])
-      .eq("children.payment_type", "paid")
-      .gte("paid_at", since)
-      .order("paid_at", { ascending: false })
-      .limit(limit);
-  }
-  const { data } = await q;
   const rows = (data ?? []) as Array<{
     child_id: string;
     paid_at: string | null;
     payment_method: string | null;
     status: string | null;
-    amount?: number | null;
-    currency?: string | null;
     children: {
       first_name: string | null;
       last_name: string | null;
@@ -6179,8 +6055,6 @@ async function toolGetRecentConfirmedPayments(
       copil: r.children
         ? fullName(r.children.first_name, r.children.last_name)
         : null,
-      suma: r.amount ?? null,
-      valuta: r.currency ?? null,
       data: r.paid_at?.slice(0, 10) ?? null,
       metoda: (r.payment_method ?? "").toUpperCase() || null,
       confirmat_de: r.confirmed_by
@@ -6188,7 +6062,6 @@ async function toolGetRecentConfirmedPayments(
         : null,
       status: r.status,
     })),
-    nota: amountAvailable ? undefined : "Coloana amount nu este disponibilă.",
   };
 }
 
@@ -6523,7 +6396,6 @@ function sourcesFor(toolName: string): string[] {
     "get_recent_materials": ["Materiale"],
     "get_workshops_without_materials": ["Materiale", "Ateliere"],
     // Plăți avansate
-    "get_payment_amount_summary": ["Plăți"],
     "get_recent_confirmed_payments": ["Plăți", "Copii"],
     "get_children_near_payment_cycle": ["Plăți", "Prezențe", "Copii"],
     // Calitate ateliere
@@ -7036,11 +6908,9 @@ async function dispatchToolInner(
         return await toolGetWorkshopsWithoutMaterials(admin);
 
       // ── Payment intelligence ───────────────────────────────────────────
-      case "get_payment_amount_summary":
-        return await toolGetPaymentAmountSummary(
-          admin,
-          args as { year?: number; month?: number },
-        );
+      // Note: get_payment_amount_summary removed on 2026-08-14 — the app
+      // doesn't store per-cycle amounts and the tool led to hallucinated
+      // sums. Internal composite tools still call the stub function.
       case "get_recent_confirmed_payments":
         return await toolGetRecentConfirmedPayments(
           admin,
