@@ -1997,18 +1997,21 @@ async function toolGetPaymentsDue(
   args: { only_overdue?: boolean },
 ): Promise<Record<string, unknown>> {
   const statuses = args.only_overdue ? ["overdue"] : ["due", "overdue"];
+  // Series info joined so the model can present per-workshop context —
+  // a child enrolled in 2 workshops may have a due cycle for Robotică
+  // and be up-to-date for Engleză. Merging them into one line is wrong.
   const { data } = await admin
     .from("payment_cycles")
     .select(
       "child_id, status, payment_method, period_start, period_end, " +
-        "sessions_count, paid_at, confirmed_by, " +
-        "children!inner(first_name, last_name, payment_type)",
+        "sessions_count, paid_at, confirmed_by, series_id, " +
+        "children!inner(first_name, last_name, payment_type), " +
+        "workshop_series!series_id(title)",
     )
     .in("status", statuses)
-    // Exclude free participants — they never have payment obligations.
     .eq("children.payment_type", "paid")
     .order("period_start", { ascending: false })
-    .limit(50);
+    .limit(80);
 
   const rows = (data ?? []) as Array<{
     child_id: string;
@@ -2019,9 +2022,11 @@ async function toolGetPaymentsDue(
     sessions_count: number | null;
     paid_at: string | null;
     confirmed_by: string | null;
+    series_id: string | null;
     children:
       | { first_name: string | null; last_name: string | null; payment_type: string | null }
       | null;
+    workshop_series: { title: string | null } | null;
   }>;
 
   const overdue = rows.filter((r) => r.status === "overdue").length;
@@ -2036,11 +2041,16 @@ async function toolGetPaymentsDue(
         ? fullName(r.children.first_name, r.children.last_name)
         : null,
       child_id: r.child_id,
+      atelier: r.workshop_series?.title ?? null,
       status: r.status,
       metoda: (r.payment_method ?? "").toUpperCase() || null,
       perioada: `${r.period_start} – ${r.period_end}`,
       sedinte: r.sessions_count,
     })),
+    nota:
+      "Ciclurile de plată sunt INDEPENDENTE per atelier. Fiecare rând din " +
+      "`detalii` include `atelier` — folosește-l în răspuns astfel încât " +
+      "utilizatorul să vadă ce atelier are ciclu restant, nu doar copilul.",
   };
 }
 
@@ -2330,7 +2340,9 @@ async function toolGetFinancialSummary(
         .from("payment_cycles")
         .select(
           "child_id, sessions_count, status, period_start, period_end, " +
-            "children!inner(payment_type)",
+            "series_id, " +
+            "children!inner(payment_type), " +
+            "workshop_series!series_id(title)",
         )
         .in("status", ["due", "overdue"])
         .eq("children.payment_type", "paid"),
@@ -2342,6 +2354,8 @@ async function toolGetFinancialSummary(
     status: string | null;
     period_start: string | null;
     period_end: string | null;
+    series_id: string | null;
+    workshop_series: { title: string | null } | null;
   }>;
 
   type ChildAgg = {
@@ -2349,11 +2363,13 @@ async function toolGetFinancialSummary(
     sessions: number;
     overdue: number;
     earliestPeriod: string | null;
+    series: Set<string>; // series titles the child owes for
   };
   const perChild = new Map<string, ChildAgg>();
+  const perSeries = new Map<string, { cycles: number; overdue: number }>();
   for (const r of outstanding) {
     const b = perChild.get(r.child_id) ??
-      { cycles: 0, sessions: 0, overdue: 0, earliestPeriod: null };
+      { cycles: 0, sessions: 0, overdue: 0, earliestPeriod: null, series: new Set<string>() };
     b.cycles += 1;
     b.sessions += r.sessions_count ?? 0;
     if (r.status === "overdue") b.overdue += 1;
@@ -2361,7 +2377,13 @@ async function toolGetFinancialSummary(
         (b.earliestPeriod === null || r.period_start < b.earliestPeriod)) {
       b.earliestPeriod = r.period_start;
     }
+    const title = r.workshop_series?.title ?? "Fără atelier";
+    b.series.add(title);
     perChild.set(r.child_id, b);
+    const s = perSeries.get(title) ?? { cycles: 0, overdue: 0 };
+    s.cycles += 1;
+    if (r.status === "overdue") s.overdue += 1;
+    perSeries.set(title, s);
   }
 
   const childIds = Array.from(perChild.keys());
@@ -2388,6 +2410,7 @@ async function toolGetFinancialSummary(
           sedinte_neincasate: b.sessions,
           restante: b.overdue,
           cea_mai_veche_perioada: b.earliestPeriod,
+          ateliere_cu_cicluri_neincasate: Array.from(b.series).sort(),
         };
       })
       .sort((a, b) =>
@@ -2403,6 +2426,14 @@ async function toolGetFinancialSummary(
     0,
   );
 
+  const perSeriesBreakdown = Array.from(perSeries.entries())
+    .map(([title, s]) => ({
+      atelier: title,
+      cicluri_neincasate: s.cycles,
+      restante: s.overdue,
+    }))
+    .sort((a, b) => b.cicluri_neincasate - a.cicluri_neincasate);
+
   return {
     cicluri_neincasate: dueRes.count ?? 0,
     cicluri_restante: overdueRes.count ?? 0,
@@ -2411,6 +2442,9 @@ async function toolGetFinancialSummary(
     nota_suma:
       "Aplicația nu stochează preț per sesiune; o sumă monetară exactă nu poate fi calculată. Folosește total_sedinte_neincasate ca proxy.",
     copii_cu_cele_mai_multe_plati_neincasate: topChildren,
+    cicluri_neincasate_per_atelier: perSeriesBreakdown,
+    nota_atelier:
+      "Ciclurile de plată sunt per atelier. Când răspunzi, precizează care copii au restanțe pe care ateliere — nu combina Robotică cu Engleză într-un total agregat pentru același copil.",
   };
 }
 
@@ -4494,8 +4528,9 @@ async function toolGetAdvancePaidCycles(
   const { data } = await admin
     .from("payment_cycles")
     .select(
-      "child_id, paid_at, payment_method, sessions_count, " +
-        "children!inner(payment_type)",
+      "child_id, paid_at, payment_method, sessions_count, series_id, " +
+        "children!inner(payment_type), " +
+        "workshop_series!series_id(title)",
     )
     .eq("status", "paid_advance")
     .eq("children.payment_type", "paid")
@@ -4505,6 +4540,8 @@ async function toolGetAdvancePaidCycles(
     paid_at: string | null;
     payment_method: string | null;
     sessions_count: number | null;
+    series_id: string | null;
+    workshop_series: { title: string | null } | null;
   }>;
   const names = await fetchChildNames(admin, rows.map((r) => r.child_id));
   return {
@@ -4512,12 +4549,16 @@ async function toolGetAdvancePaidCycles(
     cicluri_in_avans: trim(
       rows.map((r) => ({
         nume: names.get(r.child_id) ?? "Necunoscut",
+        atelier: r.workshop_series?.title ?? null,
         platit_la: r.paid_at?.slice(0, 10) ?? null,
         metoda: (r.payment_method ?? "").toUpperCase() || null,
         sedinte: r.sessions_count,
       })),
       limit,
     ),
+    nota:
+      "Ciclurile paid_advance sunt per (copil, atelier). Un copil poate avea " +
+      "un avans separat pentru fiecare atelier la care e înscris.",
   };
 }
 
@@ -6095,23 +6136,26 @@ async function toolGetRecentConfirmedPayments(
 async function toolGetChildrenNearPaymentCycle(
   admin: SupabaseClient,
 ): Promise<Record<string, unknown>> {
-  // Children with 3 present attendance rows in their current open cycle
-  // (payment_cycle_id IS NULL, is_archived = false). Free participants
-  // never enter this list.
+  // Since 2026-08-20 cycles are per (child, series). Count PRESENT rows
+  // per (child, series) that are still in the open block
+  // (payment_cycle_id IS NULL) and surface those with exactly 3 —
+  // meaning one more PRESENT closes the cycle for that specific
+  // workshop. Cross-series aggregates are wrong here: 2 Robotică + 1
+  // Engleză is not "near a cycle" for either workshop.
   const { data: attRows } = await admin
     .from("attendance")
     .select(
-      "child_id, status, marked_at, children!inner(payment_type, first_name, last_name, is_active), " +
-        "scheduled_workshops!scheduled_workshop_id(title, workshop_date)",
+      "child_id, status, children!inner(payment_type, first_name, last_name, is_active), " +
+        "scheduled_workshops!scheduled_workshop_id(title, workshop_date, series_id, recurring_series_id, workshop_series!series_id(title))",
     )
     .is("payment_cycle_id", null)
     .eq("is_archived", false)
+    .eq("status", "present")
     .eq("children.payment_type", "paid")
     .eq("children.is_active", true);
   const rows = (attRows ?? []) as Array<{
     child_id: string;
     status: string | null;
-    marked_at: string | null;
     children: {
       payment_type: string | null;
       first_name: string | null;
@@ -6121,42 +6165,57 @@ async function toolGetChildrenNearPaymentCycle(
     scheduled_workshops: {
       title: string | null;
       workshop_date: string | null;
+      series_id: string | null;
+      recurring_series_id: string | null;
+      workshop_series: { title: string | null } | null;
     } | null;
   }>;
   type Bucket = {
     name: string;
+    seriesTitle: string;
     present: number;
     lastDate: string | null;
     lastWorkshop: string | null;
   };
-  const byChild = new Map<string, Bucket>();
+  const byKey = new Map<string, Bucket>();
   for (const r of rows) {
-    if (!r.children) continue;
-    const b = byChild.get(r.child_id) ?? {
+    if (!r.children || !r.scheduled_workshops) continue;
+    const sid = r.scheduled_workshops.series_id ??
+      r.scheduled_workshops.recurring_series_id;
+    if (!sid) continue;
+    const key = `${r.child_id}::${sid}`;
+    const b = byKey.get(key) ?? {
       name: fullName(r.children.first_name, r.children.last_name),
+      seriesTitle: r.scheduled_workshops.workshop_series?.title ??
+        r.scheduled_workshops.title ??
+        "Atelier",
       present: 0,
       lastDate: null,
       lastWorkshop: null,
     };
-    if (r.status === "present") b.present += 1;
-    const wsDate = r.scheduled_workshops?.workshop_date ?? null;
+    b.present += 1;
+    const wsDate = r.scheduled_workshops.workshop_date;
     if (wsDate && (b.lastDate == null || wsDate > b.lastDate)) {
       b.lastDate = wsDate;
-      b.lastWorkshop = r.scheduled_workshops?.title ?? null;
+      b.lastWorkshop = r.scheduled_workshops.title;
     }
-    byChild.set(r.child_id, b);
+    byKey.set(key, b);
   }
-  const near = Array.from(byChild.values())
+  const near = Array.from(byKey.values())
     .filter((b) => b.present === 3)
     .sort((a, b) => (a.lastDate ?? "").localeCompare(b.lastDate ?? ""));
   return {
     total: near.length,
     copii: near.map((b) => ({
       copil: b.name,
+      atelier: b.seriesTitle,
       prezente_in_ciclul_curent: b.present,
       ultima_prezenta: b.lastDate,
       ultimul_atelier: b.lastWorkshop,
     })),
+    nota:
+      "Rezultat per (copil, atelier). Un copil poate apărea de mai multe " +
+      "ori dacă e aproape de ciclu la mai multe ateliere simultan.",
   };
 }
 
