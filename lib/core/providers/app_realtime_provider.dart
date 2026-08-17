@@ -93,9 +93,7 @@ final appRealtimeProvider = Provider.autoDispose<void>((ref) {
           }
           if (childId != null) {
             ref.invalidate(childByIdProvider(childId));
-            ref.invalidate(childCurrentStatusProvider(childId));
             ref.invalidate(childCurrentStatusRowsProvider(childId));
-            ref.invalidate(childPaymentStatusRowsProvider(childId));
             ref.invalidate(childMissingAttendanceProvider(childId));
             // The calendar-month provider is a keyed family (year+month).
             // We cannot invalidate a specific key without knowing the
@@ -223,7 +221,7 @@ final appRealtimeProvider = Provider.autoDispose<void>((ref) {
           if (childId != null) {
             ref.invalidate(childWorkshopSeriesProvider(childId));
             ref.invalidate(availableWorkshopSeriesForChildProvider(childId));
-            ref.invalidate(childCurrentStatusProvider(childId));
+            ref.invalidate(childCurrentStatusRowsProvider(childId));
             ref.invalidate(childByIdProvider(childId));
             ref.invalidate(childMissingAttendanceProvider(childId));
             ref.invalidate(childCalendarMonthProvider);
@@ -259,7 +257,7 @@ final appRealtimeProvider = Provider.autoDispose<void>((ref) {
             ref.invalidate(childByIdProvider(id));
             ref.invalidate(childDetailProvider(id));
             ref.invalidate(childWorkshopSeriesProvider(id));
-            ref.invalidate(childCurrentStatusProvider(id));
+            ref.invalidate(childCurrentStatusRowsProvider(id));
             if (kDebugMode) {
               debugPrint('[RT] children: child providers($id) invalidated');
             }
@@ -305,15 +303,13 @@ final appRealtimeProvider = Provider.autoDispose<void>((ref) {
           if (childId != null) {
             ref.invalidate(childByIdProvider(childId));
             ref.invalidate(childPaymentCyclesNewProvider(childId));
-            ref.invalidate(childPaymentStatusRowsProvider(childId));
-            ref.invalidate(childCurrentStatusProvider(childId));
             ref.invalidate(childCurrentStatusRowsProvider(childId));
             ref.invalidate(childCalendarMonthProvider);
             if (kDebugMode) {
               debugPrint(
                 '[RT] payment_cycles: child providers($childId) invalidated '
-                '(childById, paymentCyclesNew, paymentStatusRows, '
-                'currentStatus, currentStatusRows, calendarMonth)',
+                '(childById, paymentCyclesNew, '
+                'currentStatusRows, calendarMonth)',
               );
             }
           } else {

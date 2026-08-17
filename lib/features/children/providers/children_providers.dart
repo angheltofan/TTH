@@ -161,32 +161,9 @@ final childAttendanceHistoryProvider =
   return repo.getAttendanceHistoryFull(childId);
 });
 
-final childActivityHistoryProvider = FutureProvider.family<
-    ({List<Map<String, dynamic>> rows, bool hasMore}),
-    String>((ref, childId) {
-  final limit = ref.watch(childActivityLimitProvider(childId));
-  return ref
-      .watch(childAttendanceRepositoryProvider)
-      .getActivityHistory(childId, limit: limit);
-});
-
-final childActivityLimitProvider =
-    StateProvider.family<int, String>((ref, childId) => 20);
-
-// ── Current payment cycle ─────────────────────────────────────────────────────
-
-final childCurrentCycleSummaryProvider =
-    FutureProvider.family<Map<String, dynamic>?, String>((ref, childId) {
-  return ref
-      .watch(childAttendanceRepositoryProvider)
-      .getCurrentCycleSummary(childId);
-});
-
-final childCurrentCycleActivityProvider =
-    FutureProvider.family<List<Map<String, dynamic>>, String>(
-        (ref, childId) {
-  return ref
-      .watch(childAttendanceRepositoryProvider)
-      .getCurrentCycleActivity(childId);
-});
+// Legacy providers (childActivityHistoryProvider, childActivityLimit,
+// childCurrentCycleSummaryProvider, childCurrentCycleActivityProvider)
+// removed 2026-08-22 alongside the underlying views. Card / list
+// widgets now aggregate directly from base tables via
+// childCurrentStatusRowsProvider + childPaymentCyclesNewProvider.
 

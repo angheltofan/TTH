@@ -135,7 +135,7 @@ class _DemoWorkshopDetailsPageState
       ref.invalidate(availableChildrenForSeriesProvider(seriesId));
       ref.invalidate(childWorkshopSeriesProvider(childId));
       ref.invalidate(childByIdProvider(childId));
-      ref.invalidate(childCurrentStatusProvider(childId));
+      ref.invalidate(childCurrentStatusRowsProvider(childId));
 
       if (mounted) {
         final msg = result.enrollmentCreated

@@ -1,10 +1,8 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../domain/child_current_status.dart';
 import '../domain/child_current_status_row.dart';
 import '../domain/child_model.dart';
 import '../domain/child_payment_cycle.dart';
-import '../domain/child_payment_status_row.dart';
 
 /// Data layer for the Child Details page.
 /// Uses: children, attendance, scheduled_workshops, profiles,
@@ -26,18 +24,6 @@ class ChildDetailsRepository {
         .eq('id', childId)
         .maybeSingle();
     return data != null ? ChildModel.fromMap(data) : null;
-  }
-
-  // ── Current cycle summary from child_current_status view ──────────────────
-
-  Future<ChildCurrentStatus?> fetchChildCurrentStatus(
-      String childId) async {
-    final data = await _client
-        .from('child_current_status')
-        .select()
-        .eq('child_id', childId)
-        .maybeSingle();
-    return data != null ? ChildCurrentStatus.fromMap(data) : null;
   }
 
   // ── ALL non-archived attendance for a child (series-aware) ───────────────
@@ -151,21 +137,6 @@ class ChildDetailsRepository {
       return (a.startTime ?? '').compareTo(b.startTime ?? '');
     });
     return out;
-  }
-
-  // ── Payment history rows from child_payment_status_rows view ──────────────
-
-  Future<List<ChildPaymentStatusRow>> fetchChildPaymentStatusRows(
-      String childId) async {
-    final data = await _client
-        .from('child_payment_status_rows')
-        .select()
-        .eq('child_id', childId)
-        .order('workshop_date', ascending: false);
-    return (data as List)
-        .map((r) =>
-            ChildPaymentStatusRow.fromMap(r as Map<String, dynamic>))
-        .toList();
   }
 
   // ── Payment cycles from payment_cycles table ──────────────────────────────

@@ -160,12 +160,9 @@ class _ActiveCycleSectionState extends ConsumerState<ActiveCycleSection> {
     if (result == null) return;
 
     if (isDue) {
-      ref.invalidate(childPaymentStatusRowsProvider(widget.childId));
       ref.invalidate(childPaymentCyclesNewProvider(widget.childId));
       ref.invalidate(childCurrentStatusRowsProvider(widget.childId));
-      ref.invalidate(childCurrentStatusProvider(widget.childId));
     } else {
-      ref.invalidate(childPaymentStatusRowsProvider(widget.childId));
       ref.invalidate(childPaymentCyclesNewProvider(widget.childId));
       if (mounted) {
         setState(() {

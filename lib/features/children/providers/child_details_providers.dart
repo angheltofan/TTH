@@ -2,11 +2,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/supabase/supabase_client_provider.dart';
 import '../data/child_details_repository.dart';
-import '../domain/child_current_status.dart';
 import '../domain/child_current_status_row.dart';
 import '../domain/child_model.dart';
 import '../domain/child_payment_cycle.dart';
-import '../domain/child_payment_status_row.dart';
 
 // ── Repository ────────────────────────────────────────────────────────────────
 
@@ -24,30 +22,18 @@ final childByIdProvider =
       .fetchChildById(childId);
 });
 
-
-// ── Current cycle summary ─────────────────────────────────────────────────────
-
-final childCurrentStatusProvider =
-    FutureProvider.autoDispose.family<ChildCurrentStatus?, String>(
-        (ref, childId) {
-  return ref
-      .watch(childDetailsRepositoryProvider)
-      .fetchChildCurrentStatus(childId);
-});
-
-// ── Current cycle attendance rows ─────────────────────────────────────────────
+// ── Attendance rows (all non-archived, series-aware) ─────────────────────────
 //
-// For paid children: behaviour unchanged — returns every unarchived
-// attendance row whose `payment_cycle_id IS NULL`.
+// Since 2026-08-21 this provider returns every non-archived attendance row
+// for the child with resolved series info + `paymentCycleId`. Cards do
+// their own chronological classification: PRESENT rows linked to a cycle
+// go inside that cycle's card; ABSENT rows (always payment_cycle_id NULL)
+// are placed in whichever cycle their workshop_date falls into; unlinked
+// rows AFTER the latest cycle boundary land in the current section.
 //
-// For free children: the same fetch runs, but its result is then windowed
-// client-side to the trailing "current block" (everything after the most
-// recent 4th-present row). The DB trigger that auto-creates payment_cycles
-// is blocked for free children, so without this windowing the row list
-// would grow forever instead of resetting to 0/4. The dispatch reads the
-// child's payment_type via `childByIdProvider`; while that future is
-// loading we fall back to `'paid'` semantics — safe because the fallback
-// is a strict superset of the free output.
+// For free children the server never creates payment_cycles rows so the
+// repository applies a per-series windowing pass to emulate the same
+// "X / 4 → reset to 0 / 4" behaviour without a financial cycle.
 
 final childCurrentStatusRowsProvider =
     FutureProvider.autoDispose.family<List<ChildCurrentStatusRow>, String>(
@@ -59,17 +45,7 @@ final childCurrentStatusRowsProvider =
       .fetchChildCurrentStatusRows(childId, isFreeParticipant: isFree);
 });
 
-// ── Payment status rows ───────────────────────────────────────────────────────
-
-final childPaymentStatusRowsProvider =
-    FutureProvider.autoDispose.family<List<ChildPaymentStatusRow>, String>(
-        (ref, childId) {
-  return ref
-      .watch(childDetailsRepositoryProvider)
-      .fetchChildPaymentStatusRows(childId);
-});
-
-// ── Payment cycles ────────────────────────────────────────────────────────────
+// ── Payment cycles (source of truth for card grouping) ──────────────────────
 
 final childPaymentCyclesNewProvider =
     FutureProvider.autoDispose.family<List<ChildPaymentCycle>, String>(

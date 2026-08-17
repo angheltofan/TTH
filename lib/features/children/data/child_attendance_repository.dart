@@ -103,44 +103,10 @@ class ChildAttendanceRepository {
     return _sortByWorkshopDate((data as List).cast<Map<String, dynamic>>());
   }
 
-  // ── Activity history via child_activity_history view ─────────────────────
-
-  Future<({List<Map<String, dynamic>> rows, bool hasMore})>
-      getActivityHistory(String childId, {int limit = 20}) async {
-    final data = await _client
-        .from('child_activity_history')
-        .select()
-        .eq('child_id', childId)
-        .not('is_archived', 'is', 'true')
-        .order('workshop_date', ascending: false)
-        .limit(limit + 1);
-    final all = (data as List).cast<Map<String, dynamic>>();
-    final hasMore = all.length > limit;
-    return (rows: all.take(limit).toList(), hasMore: hasMore);
-  }
-
-  // ── Current cycle summary via child_current_cycle_summary view ───────────
-
-  Future<Map<String, dynamic>?> getCurrentCycleSummary(
-      String childId) async {
-    return await _client
-        .from('child_current_cycle_summary')
-        .select()
-        .eq('child_id', childId)
-        .maybeSingle();
-  }
-
-  // ── Current cycle activity via child_current_cycle_activity view ──────────
-
-  Future<List<Map<String, dynamic>>> getCurrentCycleActivity(
-      String childId) async {
-    final data = await _client
-        .from('child_current_cycle_activity')
-        .select()
-        .eq('child_id', childId)
-        .order('workshop_date', ascending: true);
-    return data.cast<Map<String, dynamic>>();
-  }
+  // Legacy view-backed methods removed 2026-08-22 (getActivityHistory,
+  // getCurrentCycleSummary, getCurrentCycleActivity). Their underlying
+  // views (child_activity_history, child_current_cycle_summary,
+  // child_current_cycle_activity) were dropped by migration 20260822.
 
   // ── Private helpers ──────────────────────────────────────────────────────
 
