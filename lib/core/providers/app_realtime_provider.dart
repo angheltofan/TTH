@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../supabase/supabase_client_provider.dart';
 import '../../features/auth/providers/auth_providers.dart';
+import '../../features/children/providers/attendance_calendar_providers.dart';
 import '../../features/children/providers/child_details_providers.dart';
 import '../../features/children/providers/children_providers.dart';
 import '../../features/dashboard/providers/dashboard_providers.dart';
@@ -95,10 +96,17 @@ final appRealtimeProvider = Provider.autoDispose<void>((ref) {
             ref.invalidate(childCurrentStatusProvider(childId));
             ref.invalidate(childCurrentStatusRowsProvider(childId));
             ref.invalidate(childPaymentStatusRowsProvider(childId));
+            ref.invalidate(childMissingAttendanceProvider(childId));
+            // The calendar-month provider is a keyed family (year+month).
+            // We cannot invalidate a specific key without knowing the
+            // workshop's date, so refresh all currently-mounted variants
+            // for this child.
+            ref.invalidate(childCalendarMonthProvider);
             if (kDebugMode) {
               debugPrint(
                 '[RT] attendance: child providers($childId) invalidated '
-                '(childById, currentStatus, currentStatusRows, paymentStatusRows)',
+                '(childById, currentStatus, currentStatusRows, paymentStatusRows, '
+                'missingAttendance, calendarMonth)',
               );
             }
           } else {
@@ -217,6 +225,8 @@ final appRealtimeProvider = Provider.autoDispose<void>((ref) {
             ref.invalidate(availableWorkshopSeriesForChildProvider(childId));
             ref.invalidate(childCurrentStatusProvider(childId));
             ref.invalidate(childByIdProvider(childId));
+            ref.invalidate(childMissingAttendanceProvider(childId));
+            ref.invalidate(childCalendarMonthProvider);
             if (kDebugMode) {
               debugPrint('[RT] workshop_enrollments: child providers($childId) invalidated');
             }
@@ -298,11 +308,12 @@ final appRealtimeProvider = Provider.autoDispose<void>((ref) {
             ref.invalidate(childPaymentStatusRowsProvider(childId));
             ref.invalidate(childCurrentStatusProvider(childId));
             ref.invalidate(childCurrentStatusRowsProvider(childId));
+            ref.invalidate(childCalendarMonthProvider);
             if (kDebugMode) {
               debugPrint(
                 '[RT] payment_cycles: child providers($childId) invalidated '
                 '(childById, paymentCyclesNew, paymentStatusRows, '
-                'currentStatus, currentStatusRows)',
+                'currentStatus, currentStatusRows, calendarMonth)',
               );
             }
           } else {

@@ -235,6 +235,27 @@ class _WorkshopFormPageState extends ConsumerState<WorkshopFormPage> {
         }
       } else {
         await repo.create(payload);
+        // Auto-backfill: a brand-new recurring series with a past start
+        // date needs the missing weekly occurrences materialised so the
+        // historical attendance calendar has real rows to work with.
+        // Idempotent — safe if there's nothing to backfill.
+        if (_isRecurring &&
+            _seriesId != null &&
+            _workshopDate!.isBefore(
+                DateTime.now().subtract(const Duration(days: 6)))) {
+          try {
+            final inserted = await repo.backfillSeriesSessions(
+              seriesId: _seriesId!,
+              fromDate: _workshopDate!,
+            );
+            if (kDebugMode) {
+              debugPrint('[Workshop] backfill inserted $inserted sessions');
+            }
+          } catch (e) {
+            if (kDebugMode) debugPrint('[Workshop] backfill failed: $e');
+            // Non-fatal — the workshop itself was created successfully.
+          }
+        }
       }
 
       ref.invalidate(allScheduledWorkshopsProvider);

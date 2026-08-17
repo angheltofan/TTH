@@ -9,6 +9,7 @@ import '../../auth/providers/auth_providers.dart';
 import '../../parent/presentation/widgets/linked_parents_card.dart';
 import '../../workshops/providers/enrollment_providers.dart';
 import '../providers/child_details_providers.dart';
+import 'child_attendance_calendar_page.dart';
 import 'widgets/assigned_workshops_card.dart';
 import 'widgets/child_info_card.dart';
 import 'widgets/current_status_card.dart';
@@ -52,6 +53,14 @@ class _ChildDetailsPageState extends ConsumerState<ChildDetailsPage> {
         ),
         title: const Text('Detalii copil'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.calendar_month_rounded),
+            tooltip: 'Calendar prezențe',
+            onPressed: () => ChildAttendanceCalendarModal.show(
+              context,
+              childId: widget.childId,
+            ),
+          ),
           GenerateChildReportButton(childId: widget.childId),
           const SizedBox(width: 4),
         ],

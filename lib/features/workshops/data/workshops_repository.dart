@@ -323,6 +323,34 @@ class WorkshopsRepository {
     await _client.from('scheduled_workshops').delete().eq('id', id);
   }
 
+  /// Materialises weekly `scheduled_workshops` rows for [seriesId] from
+  /// [fromDate] up to [toDate] (defaults to today). Delegates to the
+  /// `backfill_series_sessions` RPC — idempotent, skips existing
+  /// (series_id, workshop_date) pairs, tolerant of the Marți/Marti
+  /// diacritic variants.
+  ///
+  /// Called after admin creates a recurring workshop with a past start
+  /// date so the historical attendance calendar has real rows to attach
+  /// attendance to. Returns the number of rows inserted.
+  Future<int> backfillSeriesSessions({
+    required String seriesId,
+    required DateTime fromDate,
+    DateTime? toDate,
+  }) async {
+    String dateOnly(DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+    final res = await _client.rpc('backfill_series_sessions', params: {
+      'p_series_id': seriesId,
+      'p_from_date': dateOnly(fromDate),
+      if (toDate != null) 'p_to_date': dateOnly(toDate),
+    });
+    if (res is int) return res;
+    if (res is num) return res.toInt();
+    return 0;
+  }
+
   /// Updates all future active workshops that share the same series id,
   /// starting from [fromDate] (inclusive). Also syncs [workshop_series]
   /// metadata so enrollment and series pages reflect the new values.

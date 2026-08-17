@@ -21,12 +21,16 @@ class MonthlyManagementReportRepository {
     final monthEnd = DateTime(year, month + 1, 0, 23, 59, 59);
     final monthStartIso = _ymd(monthStart);
     final monthEndIso = _ymd(monthEnd);
-    final monthStartTs = monthStart.toIso8601String();
-    final monthEndTs = monthEnd.toIso8601String();
 
-    // ── Bulk queries fired in parallel ──────────────────────────────────────
+    // ── Phase 1: parallel bulk queries (everything except attendance).
+    //   Attendance must be filtered by the workshop's *scheduled* date,
+    //   not by when the row was marked. Since retro-entries from the
+    //   historical calendar can be entered in a later month than the
+    //   session they refer to, `marked_at` is not a reliable business-
+    //   date. We first fetch the scheduled_workshops in the month, then
+    //   pull only attendance rows referencing those ids.
 
-    final results = await Future.wait<dynamic>([
+    final phase1 = await Future.wait<dynamic>([
       // 0. Children (all rows for counts + new-this-month + payment_type)
       _client
           .from('children')
@@ -38,7 +42,7 @@ class MonthlyManagementReportRepository {
           .eq('is_active', true),
       // 2. child_parents links
       _client.from('child_parents').select('child_id'),
-      // 3. Scheduled workshops in the month
+      // 3. Scheduled workshops in the month — drives attendance scoping
       _client
           .from('scheduled_workshops')
           .select('id, title, workshop_type, trainer_id, series_id, '
@@ -50,60 +54,70 @@ class MonthlyManagementReportRepository {
           .from('workshop_series')
           .select('id, title, workshop_type, trainer_id')
           .eq('is_active', true),
-      // 5. Attendance rows in the month
-      _client
-          .from('attendance')
-          .select(
-              'child_id, scheduled_workshop_id, status, marked_at, marked_by, '
-              'is_archived')
-          .eq('is_archived', false)
-          .gte('marked_at', monthStartTs)
-          .lte('marked_at', monthEndTs),
-      // 6. Payment cycles overlapping the month
+      // 5. Payment cycles overlapping the month
       _client
           .from('payment_cycles')
           .select(
               'child_id, status, payment_method, paid_at, period_start, period_end'),
-      // 7. Profiles for trainer names
+      // 6. Profiles for trainer names
       _client
           .from('profiles')
           .select('id, first_name, last_name, role')
           .eq('role', 'trainer'),
-      // 8. Demo workshops in the month
+      // 7. Demo workshops in the month
       _client
           .from('demo_workshops')
           .select('id, demo_date, status')
           .gte('demo_date', monthStartIso)
           .lte('demo_date', monthEndIso),
-      // 9. Parent profiles for portal stats
+      // 8. Parent profiles for portal stats
       _client
           .from('profiles')
           .select('id')
           .eq('role', 'parent'),
-      // 10. Open parent-setup tokens (TTL classification done client-side)
+      // 9. Open parent-setup tokens (TTL classification done client-side)
       _client
           .from('parent_setup_tokens')
           .select('parent_id, expires_at')
           .isFilter('consumed_at', null),
-      // 11. Consumed tokens (identifies parents who have activated)
+      // 10. Consumed tokens (identifies parents who have activated)
       _client
           .from('parent_setup_tokens')
           .select('parent_id')
           .not('consumed_at', 'is', null),
     ]);
 
-    final childrenRows = _list(results[0]);
-    final enrollmentRows = _list(results[1]);
-    final parentLinkRows = _list(results[2]);
-    final scheduledRows = _list(results[3]);
-    final activeSeriesRows = _list(results[4]);
-    final attendanceRows = _list(results[5]);
-    final paymentCycleRows = _list(results[6]);
-    final trainerRows = _list(results[7]);
-    final demoRows = _list(results[8]);
-    final parentProfileRows = _list(results[9]);
-    final openTokenRows = _list(results[10]);
-    final consumedTokenRows = _list(results[11]);
+    final childrenRows = _list(phase1[0]);
+    final enrollmentRows = _list(phase1[1]);
+    final parentLinkRows = _list(phase1[2]);
+    final scheduledRows = _list(phase1[3]);
+    final activeSeriesRows = _list(phase1[4]);
+    final paymentCycleRows = _list(phase1[5]);
+    final trainerRows = _list(phase1[6]);
+    final demoRows = _list(phase1[7]);
+    final parentProfileRows = _list(phase1[8]);
+    final openTokenRows = _list(phase1[9]);
+    final consumedTokenRows = _list(phase1[10]);
+
+    // ── Phase 2: attendance rows for the scheduled workshops in the
+    //   month. This is the business-date correct scoping — any historical
+    //   attendance entered *this* month for a *prior* month's session is
+    //   correctly attributed to the prior month, and vice-versa.
+    final scheduledIdsInMonth = scheduledRows
+        .map((r) => r['id'] as String?)
+        .whereType<String>()
+        .toList();
+    List<Map<String, dynamic>> attendanceRows = const [];
+    if (scheduledIdsInMonth.isNotEmpty) {
+      final attRaw = await _client
+          .from('attendance')
+          .select(
+              'child_id, scheduled_workshop_id, status, marked_at, marked_by, '
+              'is_archived')
+          .eq('is_archived', false)
+          .inFilter('scheduled_workshop_id', scheduledIdsInMonth);
+      attendanceRows = _list(attRaw);
+    }
 
     // Resolve child name lookup once. Used by many sections so we fetch
     // names upfront when we have at least one referenced child id.
