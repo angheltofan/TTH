@@ -11,6 +11,8 @@ class ChildCurrentStatusRow {
     this.endTime,
     this.attendanceStatus,
     this.observation,
+    this.seriesId,
+    this.seriesTitle,
   });
 
   final String childId;
@@ -24,6 +26,12 @@ class ChildCurrentStatusRow {
   /// 'present', 'absent', 'motivated', or null (unmarked).
   final String? attendanceStatus;
   final String? observation;
+
+  /// The workshop series this row belongs to. Added 2026-08-20 for per-
+  /// series grouping. Nullable for legacy rows fetched without the join.
+  final String? seriesId;
+  /// Human-readable series title (from workshop_series.title).
+  final String? seriesTitle;
 
   factory ChildCurrentStatusRow.fromMap(Map<String, dynamic> map) =>
       ChildCurrentStatusRow(

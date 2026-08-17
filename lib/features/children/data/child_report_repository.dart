@@ -134,11 +134,13 @@ class ChildReportRepository {
         .from('payment_cycles')
         .select(
             'period_start, period_end, sessions_count, status, '
-            'payment_method, paid_at, notes, created_at')
+            'payment_method, paid_at, notes, created_at, '
+            'workshop_series!series_id(title)')
         .eq('child_id', childId);
 
     final rows = (data as List).map((raw) {
       final map = raw as Map<String, dynamic>;
+      final ws = map['workshop_series'] as Map<String, dynamic>?;
       return ChildReportPaymentRow(
         periodStart: _parseDate(map['period_start']),
         periodEnd: _parseDate(map['period_end']),
@@ -149,6 +151,7 @@ class ChildReportRepository {
         notes: (map['notes'] as String?)?.trim().isEmpty == true
             ? null
             : map['notes'] as String?,
+        seriesTitle: ws?['title'] as String?,
       );
     }).toList();
 

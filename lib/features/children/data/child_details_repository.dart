@@ -61,7 +61,9 @@ class ChildDetailsRepository {
         .select(
             'id, child_id, status, observation, '
             'scheduled_workshops!scheduled_workshop_id('
-            'title, workshop_date, day_of_week, start_time, end_time)')
+            'title, workshop_date, day_of_week, start_time, end_time, '
+            'series_id, recurring_series_id, '
+            'workshop_series!series_id(title))')
         .eq('child_id', childId)
         .filter('payment_cycle_id', 'is', null)
         .eq('is_archived', false);
@@ -69,6 +71,9 @@ class ChildDetailsRepository {
     final rows = (data as List).map((e) {
       final map = e as Map<String, dynamic>;
       final sw = map['scheduled_workshops'] as Map<String, dynamic>?;
+      final wsEmbed = sw?['workshop_series'] as Map<String, dynamic>?;
+      final resolvedSeriesId = (sw?['series_id'] as String?) ??
+          (sw?['recurring_series_id'] as String?);
       return ChildCurrentStatusRow(
         childId: (map['child_id'] as String?) ?? '',
         attendanceId: map['id'] as String?,
@@ -81,6 +86,8 @@ class ChildDetailsRepository {
         endTime: sw?['end_time'] as String?,
         attendanceStatus: map['status'] as String?,
         observation: map['observation'] as String?,
+        seriesId: resolvedSeriesId,
+        seriesTitle: wsEmbed?['title'] as String?,
       );
     }).toList();
 
@@ -139,9 +146,13 @@ class ChildDetailsRepository {
 
   Future<List<ChildPaymentCycle>> fetchPaymentCycles(
       String childId) async {
+    // Join workshop_series so the model carries seriesTitle for UI grouping.
+    // Cycles created before migration 20260820 may still have series_id NULL
+    // (only for legacy paid_advance rows that couldn't be safely mapped) —
+    // the model tolerates it as null.
     final data = await _client
         .from('payment_cycles')
-        .select()
+        .select('*, workshop_series!series_id(title)')
         .eq('child_id', childId)
         .order('period_start', ascending: false);
     return (data as List)
@@ -189,6 +200,7 @@ class ChildDetailsRepository {
 
   Future<void> markAdvancePayment({
     required String childId,
+    required String seriesId,
     required String paymentMethod,
     String notes = '',
   }) async {
@@ -196,6 +208,7 @@ class ChildDetailsRepository {
       'upsert_advance_payment',
       params: {
         'p_child_id': childId,
+        'p_series_id': seriesId,
         'p_payment_method': paymentMethod, // 'pos' or 'op'
         'p_notes': notes.isEmpty ? null : notes,
       },

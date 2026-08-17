@@ -94,6 +94,7 @@ class ChildReportPaymentRow {
     this.paymentMethod,
     this.paidAt,
     this.notes,
+    this.seriesTitle,
   });
 
   final DateTime? periodStart;
@@ -108,6 +109,9 @@ class ChildReportPaymentRow {
   final String? paymentMethod;
   final DateTime? paidAt;
   final String? notes;
+  /// Workshop series title (joined from workshop_series.title). Used to
+  /// group cycles per series in the PDF. Nullable for legacy rows.
+  final String? seriesTitle;
 }
 
 class ChildReportObservation {

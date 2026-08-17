@@ -391,6 +391,39 @@ class ChildReportPdfService {
     if (rows.isEmpty) {
       return _muted('Nu există plăți înregistrate.');
     }
+
+    // Group rows by workshop series (source of truth since migration
+    // 20260820). Rows without a series title fall into "Alte cicluri"
+    // — legacy paid_advance without safe series mapping.
+    final grouped = <String, List<ChildReportPaymentRow>>{};
+    for (final r in rows) {
+      final key = r.seriesTitle ?? 'Alte cicluri';
+      grouped.putIfAbsent(key, () => []).add(r);
+    }
+    final orderedKeys = grouped.keys.toList()..sort();
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < orderedKeys.length; i++) ...[
+          if (i > 0) pw.SizedBox(height: 8),
+          pw.Text(
+            orderedKeys[i],
+            style: pw.TextStyle(
+              font: bold,
+              fontSize: 11,
+              color: PdfColors.blueGrey800,
+            ),
+          ),
+          pw.SizedBox(height: 4),
+          _paymentsTableForSeries(grouped[orderedKeys[i]]!, bold),
+        ],
+      ],
+    );
+  }
+
+  pw.Widget _paymentsTableForSeries(
+      List<ChildReportPaymentRow> rows, pw.Font bold) {
     final headers = ['Perioadă', 'Nr. ședințe', 'Status', 'Metodă', 'Data confirmării'];
     return pw.Table(
       border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.5),

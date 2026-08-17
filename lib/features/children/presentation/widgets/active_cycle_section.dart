@@ -13,6 +13,7 @@ class ActiveCycleSection extends ConsumerStatefulWidget {
   const ActiveCycleSection({
     super.key,
     required this.childId,
+    required this.seriesId,
     required this.currentRows,
     required this.dueGroup,
     required this.isConfirmed,
@@ -20,6 +21,9 @@ class ActiveCycleSection extends ConsumerStatefulWidget {
   });
 
   final String childId;
+  /// The workshop series this active cycle belongs to. Advance payments
+  /// are scoped per (child, series) since migration 20260820.
+  final String seriesId;
   final List<ChildCurrentStatusRow> currentRows;
   final CycleGroup? dueGroup;
   final bool isConfirmed;
@@ -145,6 +149,7 @@ class _ActiveCycleSectionState extends ConsumerState<ActiveCycleSection> {
         } else {
           await repo.markAdvancePayment(
             childId: widget.childId,
+            seriesId: widget.seriesId,
             paymentMethod: methodLower,
             notes: notes,
           );

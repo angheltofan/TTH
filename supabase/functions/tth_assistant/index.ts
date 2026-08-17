@@ -127,7 +127,8 @@ Overview schemă public (folosește când construiești query-uri):
   • **scheduled_workshops**: id, series_id, recurring_series_id (legacy), title, workshop_type, day_of_week, workshop_date, start_time, end_time, trainer_id, notes, is_active, is_recurring, archived_at, archived_by, archived_reason, created_at
   • **workshop_enrollments**: id, child_id, series_id, is_active, created_at
   • **attendance**: id, scheduled_workshop_id, child_id, status ('present' | 'absent' | 'motivated'), observation, marked_at, marked_by, payment_cycle_id, is_archived
-  • **payment_cycles**: id, child_id, period_start, period_end, sessions_count, status ('due' | 'overdue' | 'paid' | 'paid_advance' | 'cancelled'), payment_method ('pos' | 'op' | null), paid_at, confirmed_by, notes, created_at. NOTĂ: coloanele amount și currency EXISTĂ în schemă dar sunt NULL în TOATE rândurile — NU le folosi și NU raporta cifre monetare. Sumele nu sunt urmărite în aplicație.
+  • **payment_cycles**: id, child_id, series_id (FK → workshop_series, adăugat 2026-08-20 — cicluri sunt per (child, series)), period_start, period_end, sessions_count, status ('due' | 'overdue' | 'paid' | 'paid_advance' | 'cancelled'), payment_method ('pos' | 'op' | null), paid_at, confirmed_by, notes, created_at. NOTĂ: coloanele amount și currency EXISTĂ în schemă dar sunt NULL în TOATE rândurile — NU le folosi și NU raporta cifre monetare. Sumele nu sunt urmărite în aplicație.
+    IMPORTANT: un copil înscris la 2 ateliere (ex: Marți-Robotică + Vineri-Engleză) are cicluri INDEPENDENTE per serie. Când răspunzi despre situația plăților unui copil, grupează per workshop_series.title. NU combina prezențele din serii diferite într-un singur ciclu.
   • **notifications**: id, recipient_id, type, title, body, is_read, priority, related_child_id, related_workshop_id, action_url, created_at
   • **demo_workshops**: id, child_first_name, child_last_name, parent_name, parent_phone, parent_email, workshop_type, workshop_title, demo_date, start_time, end_time, trainer_id, status, notes, created_by, created_at
   • **team_chat_messages**: id, sender_id, body, is_deleted, attachment_url, attachment_name, attachment_size, attachment_kind ('image' | 'file'), created_at
@@ -4582,10 +4583,15 @@ async function toolGetPaymentCyclesByChild(
     };
   }
 
-  const limit = Math.min(Math.max(args.limit ?? 10, 1), 30);
+  const limit = Math.min(Math.max(args.limit ?? 30, 1), 60);
+  // Grouped per (child, series) as of migration 20260820. Include the
+  // series title so the model can group its answer per workshop.
   const { data } = await admin
     .from("payment_cycles")
-    .select("period_start, period_end, sessions_count, status, payment_method, paid_at")
+    .select(
+      "period_start, period_end, sessions_count, status, payment_method, " +
+        "paid_at, series_id, workshop_series!series_id(title)",
+    )
     .eq("child_id", child.id)
     .order("period_start", { ascending: false })
     .limit(limit);
@@ -4596,18 +4602,39 @@ async function toolGetPaymentCyclesByChild(
     status: string | null;
     payment_method: string | null;
     paid_at: string | null;
+    series_id: string | null;
+    workshop_series: { title: string | null } | null;
   }>;
-  return {
-    copil: child.full,
-    total: rows.length,
-    cicluri: rows.map((r) => ({
+
+  // Group by series title so the model returns per-workshop status.
+  const bySeries = new Map<string, Array<Record<string, unknown>>>();
+  for (const r of rows) {
+    const title = r.workshop_series?.title ?? "Ciclu fără serie asociată";
+    if (!bySeries.has(title)) bySeries.set(title, []);
+    bySeries.get(title)!.push({
       perioada: r.period_start && r.period_end
         ? `${r.period_start} – ${r.period_end}`
         : null,
       sedinte: r.sessions_count,
       status: paymentLabel(r.status, r.payment_method),
       platit_la: r.paid_at?.slice(0, 10) ?? null,
-    })),
+    });
+  }
+
+  return {
+    copil: child.full,
+    total: rows.length,
+    per_atelier: Array.from(bySeries.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([title, cycles]) => ({
+        atelier: title,
+        total_cicluri: cycles.length,
+        cicluri: cycles,
+      })),
+    nota:
+      "Ciclurile de plată sunt INDEPENDENTE per atelier. Când răspunzi " +
+      "despre situația plăților copilului, grupează per_atelier și " +
+      "prezintă statusul fiecărui atelier separat.",
   };
 }
 
