@@ -389,12 +389,42 @@ class WorkshopsRepository {
           .eq('id', seriesId);
     }
 
-    await _client
-        .from('scheduled_workshops')
-        .update(data)
-        .or('series_id.eq.$seriesId,recurring_series_id.eq.$seriesId')
-        .eq('is_active', true)
-        .gte('workshop_date', fromDate.toIso8601String().split('T').first);
+    // Identity fields (title, workshop_type, notes) are the workshop's
+    // "name" across time — they must be consistent everywhere the
+    // series appears (dashboard cards, calendar history, PDF reports,
+    // attendance timeline). Propagate them to ALL scheduled_workshops
+    // belonging to this series — past AND future, active AND
+    // archived/cancelled. Otherwise old rows keep their stale copy of
+    // the title and users see the old name in historical surfaces.
+    const identityKeys = ['title', 'workshop_type', 'notes'];
+    final identityFields = <String, dynamic>{
+      for (final k in identityKeys)
+        if (data.containsKey(k)) k: data[k],
+    };
+    if (identityFields.isNotEmpty) {
+      await _client
+          .from('scheduled_workshops')
+          .update(identityFields)
+          .or('series_id.eq.$seriesId,recurring_series_id.eq.$seriesId');
+    }
+
+    // Scheduling / roster fields (day_of_week, times, trainer_id) only
+    // apply to FUTURE active occurrences — past rows must keep their
+    // actual attendance context. Cancelled rows also stay untouched.
+    // Skip identity fields here since they were handled globally above.
+    final schedulingFields = <String, dynamic>{
+      for (final k in data.keys)
+        if (!identityKeys.contains(k)) k: data[k],
+    };
+    if (schedulingFields.isNotEmpty) {
+      await _client
+          .from('scheduled_workshops')
+          .update(schedulingFields)
+          .or('series_id.eq.$seriesId,recurring_series_id.eq.$seriesId')
+          .eq('is_active', true)
+          .gte('workshop_date',
+              fromDate.toIso8601String().split('T').first);
+    }
   }
 
   /// Cancels a **single** scheduled workshop row. Admin-only.
