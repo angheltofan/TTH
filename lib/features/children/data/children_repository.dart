@@ -56,7 +56,7 @@ class ChildrenRepository {
     final childData = await _client
         .from('children')
         .select(
-            '*, workshop_enrollments!child_id(is_active, workshop_series!series_id(id, title, workshop_type, day_of_week, start_time, end_time, trainer_id))')
+            '*, workshop_enrollments!child_id(is_active, workshop_series!series_id(id, title, workshop_type, day_of_week, start_time, end_time, trainer_id, is_active, archived_at))')
         .order('last_name');
 
     // Latest attendance per child comes from the `child_latest_attendance`
@@ -93,7 +93,7 @@ class ChildrenRepository {
     final data = await _client
         .from('children')
         .select(
-            '*, workshop_enrollments!child_id(is_active, workshop_series!series_id(id, title, workshop_type, day_of_week, start_time, end_time, trainer_id))')
+            '*, workshop_enrollments!child_id(is_active, workshop_series!series_id(id, title, workshop_type, day_of_week, start_time, end_time, trainer_id, is_active, archived_at))')
         .eq('id', id)
         .maybeSingle();
     if (data == null) return null;

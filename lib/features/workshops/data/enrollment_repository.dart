@@ -58,16 +58,22 @@ class EnrollmentRepository {
         .select(
             'workshop_series!series_id('
             'id, title, workshop_type, day_of_week, start_time, end_time, '
-            'trainer_id, notes, is_active)')
+            'trainer_id, notes, is_active, archived_at)')
         .eq('child_id', childId)
         .eq('is_active', true);
 
     return ((data as List)
         .map((e) {
-          final ws =
-              (e as Map<String, dynamic>)['workshop_series'];
+          final ws = (e as Map<String, dynamic>)['workshop_series']
+              as Map<String, dynamic>?;
           if (ws == null) return null;
-          return WorkshopSeries.fromMap(ws as Map<String, dynamic>);
+          // Skip enrollments whose parent series has been archived.
+          // Defensive filter: the migration should have deactivated
+          // these enrollments already, but manual DB writes / future
+          // regressions could re-introduce the drift.
+          if ((ws['is_active'] as bool?) == false) return null;
+          if (ws['archived_at'] != null) return null;
+          return WorkshopSeries.fromMap(ws);
         })
         .whereType<WorkshopSeries>()
         .toList()

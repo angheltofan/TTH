@@ -47,16 +47,23 @@ class ChildRow {
     DateTime? lastAttDate,
   }) {
     // Parse embedded workshop_enrollments → workshop_series.
-    // Only active enrollments are included; unique constraint on (series_id, child_id)
-    // means no deduplication is needed.
+    // Filters applied:
+    //   - enrollment must be active
+    //   - the underlying workshop_series must also be active + not
+    //     archived; otherwise the child ends up "enrolled" in a dead
+    //     workshop and the archived series leaks into filter dropdowns
+    //     and chips (Modelare 3D bug reported 2026-08-18).
+    // Unique constraint on (series_id, child_id) → no dedup needed.
     final weList = map['workshop_enrollments'] as List? ?? [];
     final workshops = weList
         .map((item) {
           final e = item as Map<String, dynamic>;
           if ((e['is_active'] as bool?) != true) return null;
-          final ws = e['workshop_series'];
+          final ws = e['workshop_series'] as Map<String, dynamic>?;
           if (ws == null) return null;
-          return ChildWorkshopSummary.fromMap(ws as Map<String, dynamic>);
+          if ((ws['is_active'] as bool?) == false) return null;
+          if (ws['archived_at'] != null) return null;
+          return ChildWorkshopSummary.fromMap(ws);
         })
         .whereType<ChildWorkshopSummary>()
         .toList();
