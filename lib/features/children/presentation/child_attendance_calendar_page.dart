@@ -298,10 +298,12 @@ class _ChildAttendanceCalendarModalState
       _showReadOnly(s);
       return;
     }
-    // Delete is admin-only + requires an existing attendance row. The
-    // repository double-checks the admin flag; RLS enforces it server-
-    // side via `attendance_delete_admin`.
-    final canDelete = profile.isAdmin && s.hasAttendance;
+    // Delete requires an existing attendance row + the same
+    // "canEditWorkshop" rule used for Prezent/Absent: admin (any) or
+    // trainer of THIS workshop. RLS
+    // (`attendance_delete_admin_or_trainer`) re-enforces on the server
+    // since migration 20260823.
+    final canDelete = s.hasAttendance && canEdit;
     await AttendanceSessionEditor.show(
       context,
       session: s,
@@ -312,7 +314,11 @@ class _ChildAttendanceCalendarModalState
 
   Future<void> _deleteAttendance(ChildCalendarSession s) async {
     final profile = ref.read(currentProfileProvider).valueOrNull;
-    if (profile == null || !profile.isAdmin) return;
+    if (profile == null || !profile.isStaff) return;
+    // Extra defence: refuse if a trainer somehow reaches this code path
+    // for a workshop they don't own. RLS would reject it anyway, but
+    // failing early gives a nicer user message.
+    if (!_canEditWorkshop(s, profile)) return;
     final attendanceId = s.attendanceId;
     if (attendanceId == null) return;
     try {
@@ -320,7 +326,7 @@ class _ChildAttendanceCalendarModalState
           .read(attendanceCalendarRepositoryProvider)
           .deleteAttendance(
             attendanceId: attendanceId,
-            isAdmin: profile.isAdmin,
+            isStaff: profile.isStaff,
           );
       _invalidateAllProvidersForThisChild();
       if (!mounted) return;

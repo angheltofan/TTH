@@ -208,8 +208,12 @@ class AttendanceCalendarRepository {
   /// created by mistake (wrong child, wrong session — not a "child was
   /// absent" case, which should be recorded as `absent` instead).
   ///
-  /// Admin-only guarded here + server-side via the
-  /// `attendance_delete_admin` RLS policy (`is_admin()`).
+  /// Staff-only guarded here (client defence). Since migration
+  /// `20260823_attendance_delete_trainer.sql`, the server-side policy
+  /// `attendance_delete_admin_or_trainer` allows either an admin OR a
+  /// trainer that owns the scheduled_workshop the attendance points to
+  /// — so a trainer trying to delete for someone else's workshop still
+  /// gets rejected at the DB level.
   ///
   /// The DB trigger `trg_recalculate_cycles_on_attendance` fires on
   /// DELETE and re-runs `recalculate_child_series_payment_cycles` for
@@ -217,10 +221,10 @@ class AttendanceCalendarRepository {
   /// automatically.
   Future<void> deleteAttendance({
     required String attendanceId,
-    required bool isAdmin,
+    required bool isStaff,
   }) async {
-    if (!isAdmin) {
-      throw StateError('Only admins may delete attendance rows');
+    if (!isStaff) {
+      throw StateError('Only staff may delete attendance rows');
     }
     await _client.from('attendance').delete().eq('id', attendanceId);
   }

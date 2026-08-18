@@ -98,9 +98,12 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
   }
 
   Future<void> _confirmDelete() async {
+    // Each Navigator.pop uses the local dialog/sheet context to avoid
+    // popping the wrong route on mobile PWA (root vs modal navigator
+    // ambiguity that has bitten this app before).
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         title: const Text('Șterge prezența?'),
         content: const Text(
           'Rândul de prezență va fi eliminat complet din baza de date. '
@@ -110,12 +113,12 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(dialogCtx, false),
             child: const Text('Anulează'),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(dialogCtx, true),
             child: const Text('Șterge'),
           ),
         ],
@@ -126,7 +129,9 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
     try {
       await widget.onDelete!();
       if (!mounted) return;
-      Navigator.pop(context);
+      // Pop the editor sheet/dialog. Uses this widget's context which
+      // is anchored inside the editor route.
+      Navigator.of(context).pop();
     } finally {
       if (mounted) setState(() => _deleting = false);
     }
@@ -213,11 +218,16 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
             maxLines: 2,
           ),
           const SizedBox(height: 16),
-          Row(
+          // Wrap keeps everything on one row on typical widths but
+          // stacks gracefully on very narrow phones (iPhone SE PWA,
+          // small Androids) so the "Șterge" trainer action never
+          // becomes untappable due to overflow.
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              // Delete button (admin-only, only when the row already
-              // exists in the DB). Rendered on the far left so the
-              // primary save action stays anchored on the right.
               if (widget.onDelete != null && s.hasAttendance)
                 TextButton.icon(
                   onPressed: _busy ? null : _confirmDelete,
@@ -232,22 +242,30 @@ class _AttendanceSessionEditorState extends State<AttendanceSessionEditor> {
                           size: 18, color: AppColors.error),
                   label: const Text('Șterge',
                       style: TextStyle(color: AppColors.error)),
-                ),
-              const Spacer(),
-              TextButton(
-                onPressed: _busy ? null : () => Navigator.pop(context),
-                child: const Text('Anulează'),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: _busy ? null : _save,
-                child: _saving
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Salvează'),
+                )
+              else
+                const SizedBox.shrink(),
+              Wrap(
+                spacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  TextButton(
+                    onPressed:
+                        _busy ? null : () => Navigator.pop(context),
+                    child: const Text('Anulează'),
+                  ),
+                  FilledButton(
+                    onPressed: _busy ? null : _save,
+                    child: _saving
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child:
+                                CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Salvează'),
+                  ),
+                ],
               ),
             ],
           ),
