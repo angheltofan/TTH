@@ -130,45 +130,55 @@ class DashboardWorkshopItem extends StatelessWidget {
                       ),
                     ],
                     const SizedBox(height: 5),
-                    // ── Type badge + status pill — wrap on narrow screens ──
+                    // ── Day-of-week chip + status pill ──
+                    //
+                    // We replaced the redundant workshop-type chip
+                    // (already conveyed by the icon on the left) with
+                    // a day-of-week chip, more useful in "Toate
+                    // atelierele" scanning. The "Programat" status is
+                    // hidden because the day already implies future
+                    // scheduling; only "În desfășurare" (live now) and
+                    // "Finalizat" (past) render, since those carry
+                    // information the day+time can't.
                     Wrap(
                       spacing: 6,
                       runSpacing: 4,
                       children: [
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 7, vertical: 2),
+                              horizontal: 8, vertical: 3),
                           decoration: BoxDecoration(
-                            color: typeColor.withValues(alpha: 0.1),
+                            color: AppColors.info.withValues(alpha: 0.10),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                                color: typeColor.withValues(alpha: 0.25)),
+                                color: AppColors.info.withValues(alpha: 0.28)),
                           ),
                           child: Text(
-                            workshop.workshopType,
-                            style: TextStyle(
-                              color: typeColor,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 9, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: statusColor.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            statusLabel,
-                            style: TextStyle(
-                              color: statusColor,
+                            workshop.dayOfWeek,
+                            style: const TextStyle(
+                              color: AppColors.info,
                               fontSize: 11,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
                         ),
+                        if (status != WorkshopCardStatus.upcoming)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 9, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: statusColor.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              statusLabel,
+                              style: TextStyle(
+                                color: statusColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
                       ],
                     ),
                   ],
