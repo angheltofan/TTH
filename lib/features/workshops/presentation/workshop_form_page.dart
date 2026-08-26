@@ -6,10 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../../auth/providers/auth_providers.dart';
 import '../../children/presentation/widgets/child_form_helpers.dart';
 import '../../dashboard/providers/dashboard_providers.dart';
-import '../data/workshops_repository.dart';
 import '../providers/enrollment_providers.dart';
 import '../providers/workshops_providers.dart';
 import 'workshop_form_actions.dart' show RecurringScope;
@@ -411,12 +409,15 @@ class _WorkshopFormPageState extends ConsumerState<WorkshopFormPage> {
                         onSave: _save,
                         saveError: _saveError,
                       ),
-                      if (_canCancelSeries()) ...[
-                        const SizedBox(height: 24),
-                        _CancelSeriesButton(
-                          onPressed: _saving ? null : _confirmCancelSeries,
-                        ),
-                      ],
+                      // "Anulează întreaga serie" button removed
+                      // 2026-08-26. Cancellation now flows through the
+                      // details page's single "Anulează sesiunea"
+                      // popup action which auto-decides:
+                      //   • recurring workshop → cancels the whole series
+                      //   • one-off workshop → cancels just the row
+                      // Rationale: users found two separate cancel
+                      // surfaces confusing and expected the "cancel
+                      // session" action to be permanent.
                     ],
                   );
                 },
@@ -428,183 +429,9 @@ class _WorkshopFormPageState extends ConsumerState<WorkshopFormPage> {
     );
   }
 
-  /// True when the admin is editing a workshop that is part of a
-  /// recurring series — the only case where "Cancel entire series"
-  /// makes sense. Series cancellation is intentionally NOT reachable
-  /// from the details page (that only offers "Cancel session"); it
-  /// lives here on the edit page so an admin has to open the workshop
-  /// first, per rule 8.
-  bool _canCancelSeries() {
-    if (!_isEditing) return false;
-    if (_seriesId == null || _seriesId!.isEmpty) return false;
-    final profile = ref.read(currentProfileProvider).valueOrNull;
-    return profile?.isAdmin ?? false;
-  }
-
-  Future<void> _confirmCancelSeries() async {
-    final seriesId = _seriesId;
-    final profile = ref.read(currentProfileProvider).valueOrNull;
-    final adminId = profile?.id;
-    if (seriesId == null || adminId == null) return;
-
-    final repo = ref.read(workshopsRepositoryProvider);
-
-    SeriesCancellationImpact impact;
-    try {
-      impact = await repo.measureSeriesCancellationImpact(seriesId: seriesId);
-    } catch (e) {
-      if (mounted) setState(() => _saveError = 'Eroare la măsurare: $e');
-      return;
-    }
-    if (!mounted) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Anulează seria de ateliere?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Seria va fi anulată și eliminată din programul activ. Nu se '
-              'vor mai genera sesiuni viitoare. Prezențele istorice și '
-              'rapoartele copiilor se păstrează integral.',
-            ),
-            const SizedBox(height: 12),
-            _SeriesImpactSummary(impact: impact),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Renunță'),
-          ),
-          FilledButton(
-            style:
-                FilledButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Anulează seria'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-
-    setState(() {
-      _saving = true;
-      _saveError = null;
-    });
-    try {
-      await repo.cancelWorkshopSeries(
-        isAdmin: true,
-        adminId: adminId,
-        seriesId: seriesId,
-      );
-      ref.invalidate(allScheduledWorkshopsProvider);
-      ref.invalidate(todayWorkshopsProvider);
-      ref.invalidate(workshopsListProvider);
-      ref.invalidate(activeWorkshopSeriesProvider);
-      ref.invalidate(dashboardStatsProvider);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Seria a fost anulată.')),
-        );
-        context.canPop() ? context.pop() : context.go('/dashboard');
-      }
-    } on WorkshopCancelBlockedException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _saveError = e.reason == WorkshopCancelBlockedReason.refusedByServer
-            ? 'Anularea nu a fost executată pe server (probabil permisiuni '
-                'insuficiente sau o regulă RLS).'
-            : 'Anularea seriei a eșuat.';
-        _saving = false;
-      });
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _saveError = 'Eroare la anulare: $e';
-          _saving = false;
-        });
-      }
-    }
-  }
-}
-
-// ── Cancel-series button (destructive, admin-only, edit page only) ────────
-
-class _CancelSeriesButton extends StatelessWidget {
-  const _CancelSeriesButton({required this.onPressed});
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return OutlinedButton.icon(
-      style: OutlinedButton.styleFrom(
-        foregroundColor: AppColors.error,
-        side: BorderSide(color: AppColors.error.withValues(alpha: 0.6)),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      ),
-      icon: const Icon(Icons.event_busy_outlined, size: 18),
-      label: const Text('Anulează întreaga serie'),
-      onPressed: onPressed,
-    );
-  }
-}
-
-// ── Compact summary of a series cancellation ─────────────────────────────
-
-class _SeriesImpactSummary extends StatelessWidget {
-  const _SeriesImpactSummary({required this.impact});
-  final SeriesCancellationImpact impact;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final outline = theme.colorScheme.outline;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest
-            .withValues(alpha: 0.4),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _row(theme, 'Sesiuni anulate', impact.scheduledCount, outline),
-          _row(theme, 'Înscrieri păstrate', impact.enrollmentCount, outline),
-          _row(theme, 'Prezențe păstrate în istoric',
-              impact.attendanceCount, outline),
-        ],
-      ),
-    );
-  }
-
-  Widget _row(ThemeData theme, String label, int count, Color trailingColor) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              label,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.outline),
-            ),
-          ),
-          Text(
-            '$count',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: trailingColor,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // Cancel-series flow removed 2026-08-26. All cancellation now goes
+  // through workshop_details_page.dart's `_cancelSession` which auto-
+  // decides based on whether the workshop belongs to a series.
 }
 
 // ── Section: basic info (title + type + day + isActive) ──────────────────────

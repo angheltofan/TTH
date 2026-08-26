@@ -10,10 +10,12 @@ import '../../../core/widgets/error_state.dart';
 import '../../../core/widgets/loading_state.dart';
 import '../../auth/providers/auth_providers.dart';
 import '../../children/providers/children_providers.dart';
+import '../../dashboard/providers/dashboard_providers.dart';
 import '../data/workshops_repository.dart';
 import '../domain/series_enrolled_child.dart';
 import '../providers/enrollment_providers.dart';
 import '../providers/workshops_providers.dart';
+import 'widgets/series_impact_summary.dart';
 import 'widgets/workshop_children_list.dart';
 import 'widgets/workshop_header_card.dart';
 
@@ -49,24 +51,75 @@ class _WorkshopDetailsPageState extends ConsumerState<WorkshopDetailsPage> {
   /// `archived_by = adminId`, `is_active = false`. Attendance and
   /// enrollment history are always preserved.
   ///
-  /// Works both for one-off workshops and for a single occurrence of a
-  /// recurring series (per rule 8). To cancel the whole recurring
-  /// series, admins use the "Cancel entire series" action on the edit
-  /// page.
+  /// Behaviour (unified 2026-08-26 per user request — one action, no
+  /// separate "cancel series" surface):
+  ///   • Recurring workshop → cancels the ENTIRE series. Sets
+  ///     `workshop_series.is_active=false + archived_at=now()`,
+  ///     archives every scheduled_workshops row belonging to the
+  ///     series, flips enrollments to inactive. Weekly generator will
+  ///     no longer materialise new sessions (guard added in 20260824).
+  ///   • One-off workshop → cancels just that single row (no series to
+  ///     touch).
+  ///
+  /// The dialog shows a per-cancellation impact preview when the
+  /// workshop is part of a series so the admin knows exactly what will
+  /// happen before confirming.
   Future<void> _cancelSession() async {
     final profile = ref.read(currentProfileProvider).valueOrNull;
     final isAdmin = profile?.isAdmin ?? false;
     final adminId = profile?.id;
     if (!isAdmin || adminId == null) return;
 
+    final details =
+        ref.read(workshopDetailsProvider(widget.workshopId)).valueOrNull;
+    final seriesId = (details != null && details.isNotEmpty)
+        ? details.first.seriesId
+        : null;
+    final isRecurring = seriesId != null && seriesId.isNotEmpty;
+
+    final repo = ref.read(workshopsRepositoryProvider);
+
+    // Measure impact up-front so the confirmation dialog can show it.
+    SeriesCancellationImpact? impact;
+    if (isRecurring) {
+      try {
+        impact =
+            await repo.measureSeriesCancellationImpact(seriesId: seriesId);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Eroare la măsurare: $e')),
+          );
+        }
+        return;
+      }
+      if (!mounted) return;
+    }
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Anulează sesiunea?'),
-        content: const Text(
-          'Sesiunea va fi anulată și eliminată din programul activ. '
-          'Prezențele istorice și rapoartele copiilor se păstrează '
-          'integral.',
+        title: Text(isRecurring
+            ? 'Anulează atelierul?'
+            : 'Anulează sesiunea?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isRecurring
+                  ? 'Atelierul va fi anulat definitiv. Nu se vor mai '
+                      'genera sesiuni viitoare. Prezențele istorice și '
+                      'rapoartele copiilor se păstrează integral.'
+                  : 'Sesiunea va fi anulată și eliminată din programul '
+                      'activ. Prezențele istorice și rapoartele copiilor '
+                      'se păstrează integral.',
+            ),
+            if (isRecurring && impact != null) ...[
+              const SizedBox(height: 12),
+              SeriesImpactSummary(impact: impact),
+            ],
+          ],
         ),
         actions: [
           TextButton(
@@ -74,10 +127,11 @@ class _WorkshopDetailsPageState extends ConsumerState<WorkshopDetailsPage> {
             child: const Text('Renunță'),
           ),
           FilledButton(
-            style:
-                FilledButton.styleFrom(backgroundColor: AppColors.error),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Anulează sesiunea'),
+            child: Text(isRecurring
+                ? 'Anulează atelierul'
+                : 'Anulează sesiunea'),
           ),
         ],
       ),
@@ -85,22 +139,40 @@ class _WorkshopDetailsPageState extends ConsumerState<WorkshopDetailsPage> {
     if (ok != true || !mounted) return;
 
     try {
-      await ref.read(workshopsRepositoryProvider).cancelWorkshopOneOff(
-            isAdmin: isAdmin,
-            adminId: adminId,
-            workshopId: widget.workshopId,
-          );
-      if (kDebugMode) debugPrint('[Workshop] session cancelled');
-      // Realtime (rt:scheduled_workshops) invalidates the affected list
-      // providers (workshopByIdProvider, allScheduledWorkshopsProvider,
-      // todayWorkshopsProvider, workshopsListProvider,
-      // dashboardStatsProvider) — no need to duplicate the invalidates
-      // here.
+      if (isRecurring) {
+        await repo.cancelWorkshopSeries(
+          isAdmin: isAdmin,
+          adminId: adminId,
+          seriesId: seriesId,
+        );
+      } else {
+        await repo.cancelWorkshopOneOff(
+          isAdmin: isAdmin,
+          adminId: adminId,
+          workshopId: widget.workshopId,
+        );
+      }
+      if (kDebugMode) {
+        debugPrint(isRecurring
+            ? '[Workshop] series cancelled'
+            : '[Workshop] session cancelled');
+      }
+      // Realtime (rt:scheduled_workshops + rt:workshop_series) refresh
+      // most consumers. Local invalidations cover the immediate list
+      // providers so the dashboard reflects the change on return.
+      ref.invalidate(allScheduledWorkshopsProvider);
+      ref.invalidate(todayWorkshopsProvider);
+      ref.invalidate(workshopsListProvider);
+      ref.invalidate(activeWorkshopSeriesProvider);
+      ref.invalidate(dashboardStatsProvider);
       ref.invalidate(workshopDetailsProvider(widget.workshopId));
-      await ref.read(workshopDetailsProvider(widget.workshopId).future);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sesiunea a fost anulată.')),
+          SnackBar(
+            content: Text(isRecurring
+                ? 'Atelierul a fost anulat.'
+                : 'Sesiunea a fost anulată.'),
+          ),
         );
         context.canPop() ? context.pop() : context.go('/dashboard');
       }
