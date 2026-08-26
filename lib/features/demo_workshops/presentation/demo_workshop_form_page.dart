@@ -315,6 +315,8 @@ class _DemoWorkshopFormPageState extends ConsumerState<DemoWorkshopFormPage> {
                     isEditing: false,
                     onSave: _save,
                     saveError: _saveError,
+                    createLabel: 'Adaugă demo',
+                    cancelFallbackRoute: '/dashboard',
                   ),
                 ],
               ),

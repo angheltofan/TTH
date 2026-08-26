@@ -110,12 +110,25 @@ class ChildFormSaveRow extends StatelessWidget {
     required this.isEditing,
     required this.onSave,
     this.saveError,
+    this.createLabel = 'Adaugă copil',
+    this.cancelFallbackRoute = '/children',
   });
 
   final bool saving;
   final bool isEditing;
   final VoidCallback onSave;
   final String? saveError;
+
+  /// Label for the primary button when creating a new entity.
+  /// Defaults to "Adaugă copil" because the widget was originally
+  /// written for the child form; callers on other forms (workshops,
+  /// demo workshops) pass the appropriate label.
+  final String createLabel;
+
+  /// Where the Cancel button navigates when the current route can't be
+  /// popped. Defaults to the children list for the same historical
+  /// reason as [createLabel].
+  final String cancelFallbackRoute;
 
   @override
   Widget build(BuildContext context) {
@@ -151,7 +164,7 @@ class ChildFormSaveRow extends StatelessWidget {
                   ? null
                   : () => context.canPop()
                       ? context.pop()
-                      : context.go('/children'),
+                      : context.go(cancelFallbackRoute),
               child: const Text('Anulează'),
             ),
             const SizedBox(width: 12),
@@ -166,7 +179,7 @@ class ChildFormSaveRow extends StatelessWidget {
                                 strokeWidth: 2.5,
                                 color: AppColors.purple))))
                 : AppPrimaryButton(
-                    label: isEditing ? 'Salvează' : 'Adaugă copil',
+                    label: isEditing ? 'Salvează' : createLabel,
                     icon: isEditing
                         ? Icons.save_outlined
                         : Icons.add_rounded,

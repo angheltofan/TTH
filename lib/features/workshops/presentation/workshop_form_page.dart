@@ -408,6 +408,8 @@ class _WorkshopFormPageState extends ConsumerState<WorkshopFormPage> {
                         isEditing: _isEditing,
                         onSave: _save,
                         saveError: _saveError,
+                        createLabel: 'Adaugă atelier',
+                        cancelFallbackRoute: '/dashboard',
                       ),
                       // "Anulează întreaga serie" button removed
                       // 2026-08-26. Cancellation now flows through the
