@@ -19,16 +19,19 @@ import '../../../core/theme/app_theme.dart';
 class DownloadPage extends StatelessWidget {
   const DownloadPage({super.key});
 
-  /// Public URL of the Windows installer.
+  /// Public URL of the Windows build.
   ///
-  /// Hosted via GitHub Releases — public, unlimited bandwidth, versioned
-  /// per tag. If the file should move to Vercel-static or Cloudflare R2
-  /// later, swap this constant — the rest of the page does not change.
+  /// Uses GitHub's permanent `/releases/latest/download/<asset-name>`
+  /// alias so this constant never needs to be bumped per release —
+  /// GitHub redirects to the current "Latest" release automatically.
+  /// The asset name is kept stable across releases (`TTH-Manager-
+  /// Windows.zip`) for this reason.
   static const String _installerUrl =
-      'https://github.com/angheltofan/TTH-Manager/releases/download/v1.0.1/TTHManagerSetup.exe';
+      'https://github.com/angheltofan/TTH-Manager/releases/latest/download/TTH-Manager-Windows.zip';
 
-  static const String _appVersion = 'Versiunea 1.0.1';
-  static const String _platformNote = 'Pentru Windows 10 și Windows 11';
+  static const String _appVersion = 'Ultima versiune';
+  static const String _platformNote =
+      'Arhivă ZIP · Windows 10 și Windows 11 · extrage și rulează tth_manager_app.exe';
 
   Future<void> _downloadInstaller(BuildContext context) async {
     final uri = Uri.parse(_installerUrl);
