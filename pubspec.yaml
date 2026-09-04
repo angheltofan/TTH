@@ -1,7 +1,7 @@
 name: tth_manager_app
 description: "TTH Manager — Tales & Tech HUB management app for the learning centre."
 publish_to: 'none'
-version: 0.1.0+1
+version: 1.1.0+3
 
 environment:
   sdk: ^3.11.5
